@@ -35,16 +35,11 @@ plugin will attempt to start a SAMP hub if one is not found running.
 """
 import os
 
-# astropy.vo.samp moved to astropy.samp in astropy v2.0.
 try:
     from astropy import samp
     have_samp = True
 except ImportError:
-    try:
-        from astropy.vo import samp
-        have_samp = True
-    except ImportError:
-        have_samp = False
+    have_samp = False
 
 from ginga import GingaPlugin
 from ginga.util import catalog
@@ -334,10 +329,12 @@ class GingaWrapper(object):
         self.logger = logger
 
     def display_fitsfile(self, chname, fitspath, dowait):
-        """Load (fitspath) into channel (chname).  If (dowait) is True
-        then wait for the file to be loaded before returning (synchronous).
+        """Load (``fitspath``) into channel (``chname``).
+
+        (The parameter ``dowait`` is currently ignored.)
         """
-        self.fv.load_file(fitspath, chname=chname, wait=dowait)
+        # TEMP: dowait ignored
+        self.fv.gui_do(self.fv.open_uris, [fitspath], chname=chname)
         return 0
 
 

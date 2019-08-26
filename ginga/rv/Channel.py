@@ -5,9 +5,8 @@
 # Please see the file LICENSE.txt for details.
 #
 import time
-from datetime import datetime
 
-from ginga.misc import Bunch, Datasrc, Callback, Future
+from ginga.misc import Bunch, Datasrc, Callback, Future, Settings
 
 
 class ChannelError(Exception):
@@ -98,10 +97,10 @@ class Channel(Callback.Callbacks):
 
         if was_not_there_already:
             channel.datasrc[imname] = image
-            image.add_callback('modified', channel._image_modified_cb)
 
             if not silent:
-                self.fv.gui_do(channel._add_image_update, image, info)
+                self.fv.gui_do(channel.add_image_update, image, info,
+                               update_viewer=False)
 
     def remove_image(self, imname):
         info = self.image_index[imname]
@@ -171,20 +170,13 @@ class Channel(Callback.Callbacks):
                                     idx=idx)
             image.set(image_info=info)
 
-        # we'll get notified if an image changes and can update
-        # metadata and make a chained callback
-        image.add_callback('modified', self._image_modified_cb)
+        # add an image profile if one is missing
+        profile = self.get_image_profile(image)
+        info.profile = profile
 
         if not silent:
-            if not bulk_add:
-                self._add_image_update(image, info)
-                return
-
-            # By using gui_do() here, more images may be bulk added
-            # before the _add_image_update executes--it will then
-            # only update the gui for the latest image, which saves
-            # work
-            self.fv.gui_do(self._add_image_update, image, info)
+            self.add_image_update(image, info,
+                                  update_viewer=not bulk_add)
 
     def add_image_info(self, info):
 
@@ -203,8 +195,32 @@ class Channel(Callback.Callbacks):
     def get_image_info(self, imname):
         return self.image_index[imname]
 
-    def _add_image_update(self, image, info):
+    def update_image_info(self, image, info):
+        imname = image.get('name', None)
+        if (imname is None) or (imname not in self.image_index):
+            return False
+
+        # don't update based on image name alone--actual image must match
+        try:
+            my_img = self.get_loaded_image(imname)
+            if my_img is not image:
+                return False
+
+        except KeyError:
+            return False
+
+        # update the info record
+        iminfo = self.get_image_info(imname)
+        iminfo.update(info)
+
+        self.fv.make_async_gui_callback('add-image-info', self, iminfo)
+        return True
+
+    def add_image_update(self, image, info, update_viewer=False):
         self.fv.make_async_gui_callback('add-image', self.name, image, info)
+
+        if not update_viewer:
+            return
 
         current = self.datasrc.youngest()
         curname = current.get('name')
@@ -222,18 +238,6 @@ class Channel(Callback.Callbacks):
             if channel != self:
                 self.fv.change_channel(self.name)
 
-    def _image_modified_cb(self, image):
-        imname = image.get('name', None)
-        if (imname is None) or (imname not in self.image_index):
-            # not one of ours apparently (maybe used to be, but got removed)
-            return
-
-        info = self.image_index[imname]
-        info.time_modified = datetime.utcnow()
-        self.logger.debug("image modified; making chained callback")
-
-        self.fv.make_async_gui_callback('add-image-info', self, info)
-
     def refresh_cursor_image(self):
         if self.cursor < 0:
             self.viewer.clear()
@@ -242,9 +246,9 @@ class Channel(Callback.Callbacks):
 
         info = self.history[self.cursor]
         if info.name in self.datasrc:
-            # image still in memory
-            image = self.datasrc[info.name]
-            self.switch_image(image)
+            # object still in memory
+            data_obj = self.datasrc[info.name]
+            self.switch_image(data_obj)
 
         else:
             self.switch_name(info.name)
@@ -280,7 +284,7 @@ class Channel(Callback.Callbacks):
         return True
 
     def _add_info(self, info):
-        if info in self.image_index:
+        if info.name in self.image_index:
             # image info is already present
             return False
 
@@ -312,7 +316,8 @@ class Channel(Callback.Callbacks):
                                image_loader=image_loader,
                                image_future=image_future,
                                time_added=time.time(),
-                               time_modified=None)
+                               time_modified=None,
+                               profile=None)
             self._add_info(info)
 
         else:
@@ -350,6 +355,7 @@ class Channel(Callback.Callbacks):
         self.logger.debug("available viewers are: %s" % (str(vnames)))
 
         # for now, pick first available viewer that can view this type
+        # TODO: pop-up a dialog and ask the user?
         vname = vnames[0]
 
         # if we don't have this viewer type then install one in the channel
@@ -439,8 +445,13 @@ class Channel(Callback.Callbacks):
                     self.logger.error(errmsg)
                     raise image
 
-                # perpetuate the image_future
-                image.set(image_future=image_future, name=imname, path=path)
+                profile = info.get('profile', None)
+                if profile is None:
+                    profile = self.get_image_profile(image)
+                    info.profile = profile
+                # perpetuate some of the image metadata
+                image.set(image_future=image_future, name=imname, path=path,
+                          image_info=info, profile=profile)
 
                 self.fv.gui_do(_switch, image)
 
@@ -470,6 +481,13 @@ class Channel(Callback.Callbacks):
         self._configure_sort()
 
         self.history.sort(key=self.hist_sort)
+
+    def get_image_profile(self, image):
+        profile = image.get('profile', None)
+        if profile is None:
+            profile = Settings.SettingGroup()
+            image.set(profile=profile)
+        return profile
 
     def __len__(self):
         return len(self.history)

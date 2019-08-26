@@ -25,11 +25,14 @@ take the size of the displayed image. Therefore, to create masks for
 different image dimensions, you need to repeat the steps multiple times.
 
 """
+from datetime import datetime
+
 from ginga import GingaPlugin
 from ginga import colors
 from ginga.gw import Widgets
 from ginga.misc import ParamSet, Bunch
 from ginga.util import dp
+from ginga.canvas.CanvasObject import coord_names
 
 __all__ = ['Drawing']
 
@@ -65,7 +68,7 @@ class Drawing(GingaPlugin.LocalPlugin):
         self.drawtypes = list(canvas.get_drawtypes())
         self.drawcolors = draw_colors
         self.linestyles = ['solid', 'dash']
-        self.coordtypes = ['data', 'wcs', 'cartesian', 'window']
+        self.coordtypes = coord_names
         # contains all parameters to be passed to the constructor
         self.draw_args = []
         self.draw_kwdargs = {}
@@ -404,14 +407,11 @@ class Drawing(GingaPlugin.LocalPlugin):
         # Insert new image
         self.fv.gui_call(self.fv.add_image, imname, image, chname=self.chname)
 
-        # This sets timestamp
-        image.make_callback('modified')
-
-        # Add change log to ChangeHistory
+        # Add description to ChangeHistory
         s = 'Mask created from {0} drawings ({1})'.format(
             ntags, ','.join(sorted(obj_kinds)))
-        iminfo = self.channel.get_image_info(imname)
-        iminfo.reason_modified = s
+        info = dict(time_modified=datetime.utcnow(), reason_modified=s)
+        self.fv.update_image_info(image, info)
         self.logger.info(s)
 
     def clear_canvas(self):

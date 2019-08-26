@@ -19,6 +19,7 @@ To force the use of one, do:
 (replace 'package' with one of {'astropy', 'fitsio'}) before you load
 any images.  Otherwise Ginga will try to pick one for you.
 """
+import re
 import numpy as np
 
 from ginga.misc import Bunch
@@ -68,6 +69,14 @@ def use(fitspkg, raise_err=True):
 
 class BaseFitsFileHandler(object):
 
+    # holds datatype/class objects for instantiating objects
+    # loaded from FITS files
+    factory_dict = {}
+
+    @classmethod
+    def register_type(cls, name, klass):
+        cls.factory_dict[name.lower()] = klass
+
     def __init__(self, logger):
         super(BaseFitsFileHandler, self).__init__()
 
@@ -77,15 +86,103 @@ class BaseFitsFileHandler(object):
         self.hdu_info = []
         self.hdu_db = {}
         self.extver_db = {}
-        self.factory_dict = {}
-
-    def register_type(self, name, klass):
-        self.factory_dict[name.lower()] = klass
 
     def get_factory(self):
         hdlr = self.__class__(self.logger)
-        hdlr.factory_dict.update(self.factory_dict)
         return hdlr
+
+    def __len__(self):
+        return len(self.hdu_info)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def load_idx_cont(self, idx_spec, loader_cont_fn, **kwargs):
+        """
+        Parameters
+        ----------
+        idx_spec : str
+            A string in the form of a pair of brackets enclosing some
+            index expression matching HDUs in the file
+
+        loader_cont_fn : func (data_obj) -> None
+            A loader continuation function that takes a data object
+            generated from loading an HDU and does something with it
+
+        kwargs : optional keyword arguments
+            Any optional keyword arguments are passed to the code that
+            loads the data from the file
+        """
+        if len(self) == 0:
+            raise ValueError("Please call open_file() first!")
+
+        idx_lst = self.get_matching_indexes(idx_spec)
+        if len(self) == 0:
+            raise ValueError("Please call open_file() first!")
+
+        for i in idx_lst:
+            try:
+                dst_obj = self.get_hdu(i, **kwargs)
+
+                loader_cont_fn(dst_obj)
+
+            except Exception as e:
+                self.logger.error("Error loading index '%s': %s" % (i, str(e)))
+
+    def get_matching_indexes(self, idx_spec):
+        """
+        Parameters
+        ----------
+        idx_spec : str
+            A string in the form of a pair of brackets enclosing some
+            index expression matching HDUs in the file
+
+        Returns
+        -------
+        result : list
+            A list of HDU indexes that can be used to access each HDU
+            matching the pattern
+        """
+        # if index is missing, assume to open the first HDU we know how
+        # to do something with
+        if idx_spec is None or idx_spec == '':
+            idx, hdu = self.find_first_good_hdu()
+            return [idx]
+
+        match = re.match(r'^\[(.+)\]$', idx_spec)
+        if not match:
+            return []
+
+        idx_spec = match.group(1).strip()
+        if ',' in idx_spec:
+            name, extver = idx_spec.split(',')
+            name, extver = name.strip(), extver.strip()
+        else:
+            name, extver = idx_spec.strip(), None
+
+        name = name.upper()
+
+        if extver is None:
+            if re.match(r'^\d+$', name):
+                # index just names a single HDU by number
+                return [int(name)]
+
+            # <-- assume name is an HDU name and extver is 1
+            extver = '1'
+
+        # find all HDU's matching the name and extver
+        idx_lst = []
+        idx = 0
+        for info in self.hdu_info:
+            if name == '*' or name == info.name:
+                if extver == '*' or extver == str(info.extver):
+                    idx_lst.append(info.index)
+
+        return idx_lst
 
 
 class PyFitsFileHandler(BaseFitsFileHandler):
@@ -112,13 +209,23 @@ class PyFitsFileHandler(BaseFitsFileHandler):
                     continue
                 ahdr.set_card(card.key, card.value, comment=card.comment)
 
-    def load_hdu(self, hdu, dstobj=None, **kwargs):
-
+    def get_hdu_type(self, hdu):
         if isinstance(hdu, (pyfits.ImageHDU,
                             pyfits.CompImageHDU,
                             pyfits.PrimaryHDU,
                             )):
-            # <-- data is an image
+            return 'image'
+
+        elif isinstance(hdu, (pyfits.TableHDU,
+                              pyfits.BinTableHDU)):
+            return 'table'
+
+        return None
+
+    def load_hdu(self, hdu, dstobj=None, **kwargs):
+
+        typ = self.get_hdu_type(hdu)
+        if typ == 'image':
 
             if dstobj is None:
                 # get model class for this type of object
@@ -133,11 +240,26 @@ class PyFitsFileHandler(BaseFitsFileHandler):
             # HDU in future migrate to storage-neutral format
             dstobj.load_hdu(hdu, **kwargs)
 
-        elif isinstance(hdu, (pyfits.TableHDU,
-                              pyfits.BinTableHDU)):
-            # <-- data is a table
+        elif typ == 'table':
+            # <-- data may be a table
+
+            # Handle ASDF embedded in FITS.
+            # TODO: Populate EXTNAME, EXTVER, NAXISn in ASDF meta from HDU?
+            # TODO: How to read from all the different ASDF layouts?
+            # TODO: Cache the ASDF object?
+            from ginga.util import io_asdf
+            if io_asdf.have_asdf and hdu.name == 'ASDF':
+                from asdf.fits_embed import AsdfInFits
+                from ginga import AstroImage
+                self.logger.debug('Attempting to load {} extension from '
+                                  'FITS'.format(hdu.name))
+                dstobj = AstroImage.AstroImage()
+                with AsdfInFits.open(self.fits_f) as asdf_f:
+                    dstobj.load_asdf(asdf_f)
+                return dstobj
 
             if dstobj is None:
+                self.logger.debug('Attempting to load table from FITS')
                 # get model class for this type of object
                 obj_class = self.factory_dict.get('table', None)
                 if obj_class is None:
@@ -216,21 +338,19 @@ class PyFitsFileHandler(BaseFitsFileHandler):
             # lookups by numerical index or (NAME, EXTVER)
             d = Bunch.Bunch(index=idx, name=name, extver=extver)
             if len(tup) > 5:
-                import astropy
-                from astropy.utils.introspection import minversion
-                if minversion(astropy, '2.0'):
-                    d.setvals(htype=tup[3], dtype=tup[6])
-                else:
-                    d.setvals(htype=tup[2], dtype=tup[5])
+                d.setvals(htype=tup[3], dtype=tup[6])
             self.hdu_info.append(d)
             # different ways of accessing this HDU:
             # by numerical index
             self.hdu_db[idx] = d
             # by (hduname, extver)
-            self.hdu_db[(name, extver)] = d
+            key = (name, extver)
+            if key not in self.hdu_db:
+                self.hdu_db[key] = d
             idx += 1
 
         self.extver_db = extver_db
+        return self
 
     def close(self):
         self.hdu_info = None
@@ -239,70 +359,70 @@ class PyFitsFileHandler(BaseFitsFileHandler):
         self.info = None
         self.fits_f = None
 
-    def __len__(self):
-        return len(self.hdu_info)
+    def find_first_good_hdu(self):
+
+        found_valid_hdu = False
+        for i, d in enumerate(self.hdu_info):
+            name = d.name
+            hdu = self.fits_f[i]
+
+            # rule out HDUs we can't deal with
+            typ = self.get_hdu_type(hdu)
+            if typ not in ('image', 'table'):
+                continue
+
+            if not isinstance(hdu.data, np.ndarray):
+                # We need to open a numpy array
+                continue
+
+            if 0 in hdu.data.shape:
+                # non-pixel or zero-length data hdu?
+                continue
+
+            # Looks good, let's try it
+            found_valid_hdu = True
+            extver = d.extver
+            _numhdu = (name, extver)
+            if (len(name) == 0) or (_numhdu not in self.fits_f):
+                numhdu = i
+            else:
+                numhdu = _numhdu
+            break
+
+        if not found_valid_hdu:
+            # Load just the header
+            hdu = self.fits_f[0]
+            d = self.hdu_info[0]
+            name = d.name
+            extver = d.extver
+            _numhdu = (name, extver)
+            if (len(name) == 0) or (_numhdu not in self.fits_f):
+                numhdu = 0
+            else:
+                numhdu = _numhdu
+
+        return (numhdu, hdu)
 
     def get_hdu(self, numhdu, dstobj=None, **kwargs):
 
         if numhdu is None:
-            found_valid_hdu = False
-            for i, d in enumerate(self.hdu_info):
-                name = d.name
-                hdu = self.fits_f[i]
+            numhdu, hdu = self.find_first_good_hdu()
 
-                # rule out HDUs we can't deal with
-                if not isinstance(hdu, (pyfits.ImageHDU,
-                                        pyfits.CompImageHDU,
-                                        pyfits.PrimaryHDU,
-                                        pyfits.TableHDU,
-                                        pyfits.BinTableHDU,
-                                        )):
-                    continue
+        elif numhdu in self.hdu_db:
+            d = self.hdu_db[numhdu]
+            hdu = self.fits_f[d.index]
+            # normalize the index
+            numhdu = (d.name, d.extver)
 
-                if not isinstance(hdu.data, np.ndarray):
-                    # We need to open a numpy array
-                    continue
-
-                if 0 in hdu.data.shape:
-                    # non-pixel or zero-length data hdu?
-                    continue
-
-                # Looks good, let's try it
-                found_valid_hdu = True
-                extver = d.extver
-                _numhdu = (name, extver)
-                if (len(name) == 0) or (_numhdu not in self.fits_f):
-                    numhdu = i
-                else:
-                    numhdu = _numhdu
-                break
-
-            if not found_valid_hdu:
-                # Load just the header
-                hdu = self.fits_f[0]
-                d = self.hdu_info[0]
-                name = d.name
-                extver = d.extver
-                _numhdu = (name, extver)
-                if (len(name) == 0) or (_numhdu not in self.fits_f):
-                    numhdu = 0
-                else:
-                    numhdu = _numhdu
-
-        elif isinstance(numhdu, (int, str)):
+        else:
             hdu = self.fits_f[numhdu]
+            # normalize the hdu index, if possible
             name = hdu.name
             extver = hdu.ver
             _numhdu = (name, extver)
-            if (len(name) > 0) and (_numhdu in self.fits_f):
+            if ((len(name) > 0) and (_numhdu in self.fits_f) and
+                hdu is self.fits_f[_numhdu]):
                 numhdu = _numhdu
-
-        self.logger.debug("HDU index looks like: %s" % str(numhdu))
-        if numhdu not in self.fits_f:
-            info = self.hdu_db[numhdu]
-            hdu = self.fits_f[info.index]
-        else:
-            hdu = self.fits_f[numhdu]
 
         dstobj = self.load_hdu(hdu, dstobj=dstobj, fobj=self.fits_f,
                                **kwargs)
@@ -362,20 +482,30 @@ class FitsioFileHandler(BaseFitsFileHandler):
                 continue
             ahdr.set_card(d['name'], d['value'], comment=d.get('comment', ''))
 
+    def get_hdu_type(self, hdu):
+        hduinfo = hdu.get_info()
+        hdutype = hduinfo.get('hdutype', None)
+        if hdutype == fitsio.IMAGE_HDU:
+            return 'image'
+
+        elif hdutype in (fitsio.ASCII_TBL, fitsio.BINARY_TBL):
+            return 'table'
+
+        return None
+
     def load_hdu(self, hdu, dstobj=None, **kwargs):
         from ginga import AstroImage  # Put here to avoid circular import
 
-        hduinfo = hdu.get_info()
-        hdutype = hduinfo.get('hdutype', None)
+        typ = self.get_hdu_type(hdu)
 
-        ahdr = AstroImage.AstroHeader()
-        self.fromHDU(hdu, ahdr)
-
-        metadata = dict(header=ahdr)
-        data = hdu.read()
-
-        if hdutype == fitsio.IMAGE_HDU:
+        if typ == 'image':
             # <-- data is an image
+            ahdr = AstroImage.AstroHeader()
+            self.fromHDU(hdu, ahdr)
+
+            metadata = dict(header=ahdr)
+
+            data = hdu.read()
 
             if dstobj is None:
                 # get model class for this type of object
@@ -388,7 +518,7 @@ class FitsioFileHandler(BaseFitsFileHandler):
 
             dstobj.load_data(data, metadata=metadata)
 
-        elif hdutype in (fitsio.ASCII_TBL, fitsio.BINARY_TBL):
+        elif typ == 'table':
             # <-- data is a table
             raise FITSError(
                 "FITS tables are not yet readable using ginga/fitsio")
@@ -430,7 +560,10 @@ class FitsioFileHandler(BaseFitsFileHandler):
             hdu = fits_f[idx]
             hduinfo = hdu.get_info()
             name = hduinfo['extname']
-            extver = hduinfo['extver']
+            # figure out the EXTVER for this HDU
+            #extver = hduinfo['extver']
+            extver = extver_db.setdefault(name, 0)
+            extver += 1
             extver_db[name] = extver
 
             # prepare a record of pertinent info about the HDU for
@@ -444,7 +577,11 @@ class FitsioFileHandler(BaseFitsFileHandler):
             # by numerical index
             self.hdu_db[idx] = d
             # by (hduname, extver)
-            self.hdu_db[(name, extver)] = d
+            key = (name, extver)
+            if len(name) > 0 and extver >= 0 and key not in self.hdu_db:
+                self.hdu_db[key] = d
+
+        return self
 
     def close(self):
         self.hdu_info = None
@@ -453,64 +590,73 @@ class FitsioFileHandler(BaseFitsFileHandler):
         self.info = None
         self.fits_f = None
 
-    def __len__(self):
-        return len(self.hdu_info)
+    def find_first_good_hdu(self):
+
+        found_valid_hdu = False
+        for i, d in enumerate(self.hdu_info):
+            name = d.name
+            extver = d.extver
+            hdu = self.fits_f[i]
+            hduinfo = hdu.get_info()
+
+            if not ('ndims' in hduinfo) or (hduinfo['ndims'] == 0):
+                # compressed FITS file or non-pixel data hdu?
+                continue
+
+            if not hasattr(hdu, 'read'):
+                continue
+            data = hdu.read()
+
+            if not isinstance(data, np.ndarray):
+                # We need to open a numpy array
+                continue
+
+            if 0 in data.shape:
+                # non-pixel or zero-length data hdu?
+                continue
+
+            # Looks good, let's try it
+            found_valid_hdu = True
+            if len(name) == 0:
+                numhdu = i
+            else:
+                numhdu = (name, extver)
+            break
+
+        if not found_valid_hdu:
+            # Just load the header
+            hdu = self.fits_f[0]
+            d = self.hdu_info[0]
+            name = d.name
+            extver = d.extver
+            if len(name) == 0:
+                numhdu = 0
+            else:
+                numhdu = (name, extver)
+
+        return numhdu, hdu
 
     def get_hdu(self, numhdu, dstobj=None, **kwargs):
 
         if numhdu is None:
-            found_valid_hdu = False
-            for i, d in enumerate(self.hdu_info):
-                name = d.name
-                extver = d.extver
-                hdu = self.fits_f[i]
-                hduinfo = hdu.get_info()
+            numhdu, hdu = self.find_first_good_hdu()
 
-                if not ('ndims' in hduinfo) or (hduinfo['ndims'] == 0):
-                    # compressed FITS file or non-pixel data hdu?
-                    continue
+        elif numhdu in self.hdu_db:
+            d = self.hdu_db[numhdu]
+            hdu = self.fits_f[d.index]
+            # normalize the index
+            numhdu = (d.name, d.extver)
 
-                if not hasattr(hdu, 'read'):
-                    continue
-                data = hdu.read()
-
-                if not isinstance(data, np.ndarray):
-                    # We need to open a numpy array
-                    continue
-
-                if 0 in data.shape:
-                    # non-pixel or zero-length data hdu?
-                    continue
-
-                # Looks good, let's try it
-                found_valid_hdu = True
-                if len(name) == 0:
-                    numhdu = i
-                else:
-                    numhdu = (name, extver)
-                break
-
-            if not found_valid_hdu:
-                # Just load the header
-                hdu = self.fits_f[0]
-                d = self.hdu_info[0]
-                name = d.name
-                extver = d.extver
-                if len(name) == 0:
-                    numhdu = 0
-                else:
-                    numhdu = (name, extver)
-
-        elif isinstance(numhdu, (int, str)):
+        else:
             hdu = self.fits_f[numhdu]
+            # normalize the hdu index, if possible
             hduinfo = hdu.get_info()
             name = hduinfo['extname']
             extver = hduinfo['extver']
-            if len(name) > 0:
-                numhdu = (name, extver)
-
-        self.logger.debug("HDU index looks like: %s" % str(numhdu))
-        hdu = self.fits_f[numhdu]
+            _numhdu = (name, extver)
+            if ((len(name) > 0) and (_numhdu in self.fits_f) and
+                hdu is self.fits_f[_numhdu]):
+                numhdu = _numhdu
 
         dstobj = self.load_hdu(hdu, dstobj=dstobj, fobj=self.fits_f,
                                **kwargs)
@@ -527,6 +673,19 @@ class FitsioFileHandler(BaseFitsFileHandler):
         dstobj.set(path=self.fileinfo.filepath, idx=numhdu)
 
         return dstobj
+
+    def load_idx_cont(self, idx, loader_cont_fn, **kwargs):
+        if len(self) == 0:
+            raise ValueError("Please open a file first!")
+
+        for i in len(self):
+            try:
+                dst_obj = self.get_hdu(i, **kwargs)
+
+                loader_cont_fn(dst_obj)
+
+            except Exception as e:
+                self.logger.error("Error loading index '%s': %s" % (i, str(e)))
 
     def create_fits(self, data, header):
         fits_f = pyfits.HDUList()
@@ -564,5 +723,6 @@ if not fits_configured:
 
 def get_fitsloader(kind=None, logger=None):
     return fitsLoaderClass(logger)
+
 
 # END

@@ -391,9 +391,19 @@ class ComboBox(WidgetBase):
     def clear(self):
         self.widget.clear()
 
-    def show_text(self, text):
+    def set_text(self, text):
         index = self.widget.findText(text)
-        self.set_index(index)
+        if index >= 0:
+            self.set_index(index)
+        else:
+            self.widget.setEditText(text)
+
+    # to be deprecated someday
+    show_text = set_text
+
+    def get_text(self):
+        idx = self.get_index()
+        return self.get_alpha(idx)
 
     def append_text(self, text):
         self.widget.addItem(text)
@@ -434,7 +444,9 @@ class SpinBox(WidgetBase):
         self.widget.setValue(val)
 
     def set_decimals(self, num):
-        self.widget.setDecimals(num)
+        if hasattr(self.widget, 'setDecimals'):
+            # only for QDoubleSpinBox
+            self.widget.setDecimals(num)
 
     def set_limits(self, minval, maxval, incr_value=1):
         adj = self.widget
@@ -443,8 +455,10 @@ class SpinBox(WidgetBase):
 
 
 class Slider(WidgetBase):
-    def __init__(self, orientation='horizontal', track=False):
+    def __init__(self, orientation='horizontal', dtype=int, track=False):
         super(Slider, self).__init__()
+
+        # NOTE: parameter dtype is ignored for now for Qt
 
         if orientation == 'horizontal':
             w = QtGui.QSlider(QtCore.Qt.Horizontal)
@@ -638,6 +652,22 @@ class StatusBar(WidgetBase):
         self.widget.showMessage(msg_str, int(duration * 1000))
 
 
+class TreeWidgetItem(QtGui.QTreeWidgetItem):
+    """A hack to subclass QTreeWidgetItem to enable sorting by numbers
+    in a field.
+    """
+    def __init__(self, *args, **kwargs):
+        QtGui.QTreeWidgetItem.__init__(self, *args, **kwargs)
+
+    def __lt__(self, otherItem):
+        column = self.treeWidget().sortColumn()
+        try:
+            return float(self.text(column)) < float(otherItem.text(column))
+
+        except ValueError:
+            return self.text(column) < otherItem.text(column)
+
+
 class TreeView(WidgetBase):
     def __init__(self, auto_expand=False, sortable=False,
                  selection='single', use_alt_row_color=False,
@@ -734,7 +764,7 @@ class TreeView(WidgetBase):
 
             except KeyError:
                 # new item
-                item = QtGui.QTreeWidgetItem(parent_item, values)
+                item = TreeWidgetItem(parent_item, values)
                 if level == 1:
                     parent_item.addTopLevelItem(item)
                 else:
@@ -760,7 +790,7 @@ class TreeView(WidgetBase):
 
             except KeyError:
                 # new node
-                item = QtGui.QTreeWidgetItem(parent_item, [str(key)])
+                item = TreeWidgetItem(parent_item, [str(key)])
                 if level == 1:
                     parent_item.addTopLevelItem(item)
                 else:
@@ -919,6 +949,9 @@ class ContainerBase(WidgetBase):
         super(ContainerBase, self).__init__()
         self.children = []
 
+        for name in ['widget-added', 'widget-removed']:
+            self.enable_callback(name)
+
     def add_ref(self, ref):
         # TODO: should this be a weakref?
         self.children.append(ref)
@@ -932,11 +965,13 @@ class ContainerBase(WidgetBase):
         if delete:
             childw.deleteLater()
 
-    def remove(self, w, delete=False):
-        if w not in self.children:
+    def remove(self, child, delete=False):
+        if child not in self.children:
             raise ValueError("Widget is not a child of this container")
-        self.children.remove(w)
-        self._remove(w.get_widget(), delete=delete)
+        self.children.remove(child)
+
+        self._remove(child.get_widget(), delete=delete)
+        self.make_callback('widget-removed', child)
 
     def remove_all(self, delete=False):
         for w in list(self.children):
@@ -992,6 +1027,7 @@ class Box(ContainerBase):
         self.add_ref(child)
         child_w = child.get_widget()
         self.layout.addWidget(child_w, stretch=stretch)
+        self.make_callback('widget-added', child)
 
     def set_spacing(self, val):
         self.layout.setSpacing(val)
@@ -1142,6 +1178,7 @@ class TabWidget(ContainerBase):
         self.widget.addTab(child_w, title)
         # attach title to child
         child.extdata.tab_title = title
+        self.make_callback('widget-added', child)
 
     def _remove(self, nchild, delete=False):
         idx = self.widget.indexOf(nchild)
@@ -1184,9 +1221,8 @@ class StackWidget(ContainerBase):
 
         self.widget = QtGui.QStackedWidget()
 
-        # TODO: currently only provided for compatibility with other
-        # like widgets
-        self.enable_callback('page-switch')
+        for name in ['page-switch']:
+            self.enable_callback(name)
 
     def add_widget(self, child, title=''):
         self.add_ref(child)
@@ -1194,13 +1230,18 @@ class StackWidget(ContainerBase):
         self.widget.addWidget(child_w)
         # attach title to child
         child.extdata.tab_title = title
+        self.make_callback('widget-added', child)
 
     def get_index(self):
         return self.widget.currentIndex()
 
     def set_index(self, idx):
+        _idx = self.widget.currentIndex()
         self.widget.setCurrentIndex(idx)
-        # child = self.index_to_widget(idx)
+
+        child = self.index_to_widget(idx)
+        if _idx != idx:
+            self.make_callback('page-switch', child)
         # child.focus()
 
     def index_of(self, child):
@@ -1218,7 +1259,8 @@ class MDIWidget(ContainerBase):
         w = QtGui.QMdiArea()
         w.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         w.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        w.subWindowActivated.connect(self._cb_redirect)
+        # See note below in add_widget()
+        #w.subWindowActivated.connect(self._cb_redirect)
 
         # w.setSizePolicy(QtGui.QSizePolicy(QtGui.QSizePolicy.Expanding,
         #                                   QtGui.QSizePolicy.Expanding))
@@ -1263,7 +1305,10 @@ class MDIWidget(ContainerBase):
         if subwin is not None:
             nchild = subwin.widget()
             child = self._native_to_child(nchild)
-            self.cur_index = self.children.index(child)
+            try:
+                self.cur_index = self.children.index(child)
+            except Exception:
+                self.cur_index = -1
             self.make_callback('page-switch', child)
 
     def _window_resized(self, event, subwin, widget):
@@ -1295,6 +1340,18 @@ class MDIWidget(ContainerBase):
         self.add_ref(child)
         child_w = child.get_widget()
         subwin = QtGui.QMdiSubWindow(self.widget)
+        # NOTE: we fire the page-switch callback by intercepting the
+        # focus event on the subwindow, rather than off of the
+        # subWindowActivated signal because the latter fires if
+        # the widget accepts focus when the mouse enters the window,
+        # whereas this approach one actually has to click in the window
+        # or title bar.
+
+        def _focus_cb(event):
+            if event.gotFocus():
+                self._cb_redirect(subwin)
+
+        subwin.focusInEvent = _focus_cb
         subwin.setWidget(child_w)
         # attach title to child
         child.extdata.tab_title = title
@@ -1315,6 +1372,8 @@ class MDIWidget(ContainerBase):
             x, y = pos
             w.move(x, y)
 
+        # Monkey-patching the widget to take control of resize and move
+        # events
         w._resizeEvent = w.resizeEvent
         w.resizeEvent = lambda event: self._window_resized(event, w, child)
         w._moveEvent = w.moveEvent
@@ -1322,6 +1381,7 @@ class MDIWidget(ContainerBase):
         w.setWindowTitle(title)
         child_w.show()
         w.show()
+        self.make_callback('widget-added', child)
 
     def _remove(self, nchild, delete=False):
         subwins = list(self.widget.subWindowList())
@@ -1432,6 +1492,7 @@ class Splitter(ContainerBase):
         self.add_ref(child)
         child_w = child.get_widget()
         self.widget.addWidget(child_w)
+        self.make_callback('widget-added', child)
 
     def get_sizes(self):
         return list(self.widget.sizes())
@@ -1466,6 +1527,7 @@ class GridBox(ContainerBase):
         self.add_ref(child)
         w = child.get_widget()
         self.widget.layout().addWidget(w, row, col)
+        self.make_callback('widget-added', child)
 
 
 class ToolbarAction(WidgetBase):
@@ -1519,6 +1581,8 @@ class Toolbar(ContainerBase):
             iconw = QIcon(pixmap)
             action = self.widget.addAction(iconw, text,
                                            child._cb_redirect)
+            if text is not None and len(text) > 0:
+                self.widget.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
         else:
             action = self.widget.addAction(text, child._cb_redirect)
         action.setCheckable(toggle)
@@ -1529,7 +1593,12 @@ class Toolbar(ContainerBase):
     def add_widget(self, child):
         self.add_ref(child)
         w = child.get_widget()
+        # in toolbars, generally don't want widgets to take up any more
+        # space than necessary
+        w.setSizePolicy(QtGui.QSizePolicy.Fixed,
+                        QtGui.QSizePolicy.Fixed)
         self.widget.addWidget(w)
+        self.make_callback('widget-added', child)
 
     def add_menu(self, text, menu=None, mtype='tool'):
         if menu is None:
@@ -1587,6 +1656,7 @@ class Menu(ContainerBase):
             w.setCheckable(True)
         child.widget = w
         self.add_ref(child)
+        self.make_callback('widget-added', child)
 
     def add_name(self, name, checkable=False):
         child = MenuAction(text=name, checkable=checkable)
@@ -1623,6 +1693,8 @@ class Menubar(ContainerBase):
         super(Menubar, self).__init__()
 
         self.widget = QtGui.QMenuBar()
+        if hasattr(self.widget, 'setNativeMenuBar'):
+            self.widget.setNativeMenuBar(False)
         self.menus = Bunch.Bunch(caseless=True)
 
     def add_widget(self, child, name):
@@ -1632,6 +1704,7 @@ class Menubar(ContainerBase):
         child.widget = menu_w
         self.add_ref(child)
         self.menus[name] = child
+        self.make_callback('widget-added', child)
         return child
 
     def add_name(self, name):
@@ -1755,11 +1828,15 @@ class Application(Callback.Callbacks):
 
         # Get screen size
         desktop = self._qtapp.desktop()
-        # rect = desktop.screenGeometry()
         rect = desktop.availableGeometry()
         size = rect.size()
         self.screen_wd = size.width()
         self.screen_ht = size.height()
+
+        # Get screen resolution
+        xdpi = desktop.physicalDpiX()
+        ydpi = desktop.physicalDpiY()
+        self.screen_res = max(xdpi, ydpi)
 
         for name in ('shutdown', ):
             self.enable_callback(name)
@@ -1797,8 +1874,14 @@ class Application(Callback.Callbacks):
         self.add_window(w)
         return w
 
+    def make_timer(self):
+        return QtHelp.Timer()
+
     def mainloop(self):
         self._qtapp.exec_()
+
+    def quit(self):
+        self._qtapp.quit()
 
 
 class Dialog(TopLevelMixin, WidgetBase):
@@ -1876,12 +1959,15 @@ class DragPackage(object):
     def __init__(self, src_widget):
         self.src_widget = src_widget
         self._drag = QtHelp.QDrag(self.src_widget)
+        self._data = QtCore.QMimeData()
+        self._drag.setMimeData(self._data)
 
     def set_urls(self, urls):
-        mimeData = QtCore.QMimeData()
         _urls = [QtCore.QUrl(url) for url in urls]
-        mimeData.setUrls(_urls)
-        self._drag.setMimeData(mimeData)
+        self._data.setUrls(_urls)
+
+    def set_text(self, text):
+        self._data.setText(text)
 
     def start_drag(self):
         if QtHelp.have_pyqt5:
@@ -1903,12 +1989,20 @@ def name_mangle(name, pfx=''):
 
 
 def hadjust(w, orientation):
+    """Ostensibly, a function to reduce the vertical footprint of a widget
+    that is normally used in a vertical stack (usually a Splitter), when it
+    is instead used in a horizontal orientation.
+    """
     if orientation != 'horizontal':
         return w
-    vbox = VBox()
-    vbox.add_widget(w)
-    vbox.add_widget(Label(''), stretch=1)
-    return vbox
+    # This currently does not seem to be needed for most plugins that are
+    # coded to flow either vertically or horizontally and, in fact, reduces
+    # the visual asthetic somewhat.
+    ## spl = Splitter(orientation='vertical')
+    ## spl.add_widget(w)
+    ## spl.add_widget(Label(''))
+    ## return spl
+    return w
 
 
 def make_widget(title, wtype):

@@ -1,9 +1,6 @@
 #
 # ParamSet.py -- Groups of widgets holding parameters
 #
-# Eric Jeschke (eric@naoj.org)
-#
-# Copyright (c) Eric R. Jeschke.  All rights reserved.
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
@@ -130,6 +127,15 @@ class ParamSet(Callback.Callbacks):
             else:
                 kwdargs[param.name] = value
         return args, kwdargs
+
+    def update_params(self, param_d):
+        """Update the attributes in self.obj that match the keys in
+        `param_d`.
+        """
+        for param in self.paramlst:
+            if param.name in param_d:
+                value = param_d[param.name]
+                setattr(self.obj, param.name, value)
 
     def get_params(self):
         return self._get_params()

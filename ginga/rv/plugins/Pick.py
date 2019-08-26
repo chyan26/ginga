@@ -11,7 +11,7 @@ An instance can be opened for each channel.
 **Usage**
 
 The ``Pick`` plugin is used to perform quick astronomical data quality analysis
-on stellar objects.  It locates stellar candidates within a drawn rectangle
+on stellar objects.  It locates stellar candidates within a drawn box
 and picks the most likely candidate based on a set of search settings.
 The Full Width Half Max (FWHM) is reported on the candidate object, as
 well as its size based on the plate scale of the detector.  Rough
@@ -19,7 +19,7 @@ measurement of background, sky level and brightness is also done.
 
 **Defining the pick area**
 
-The default pick area is defined as a rectangle of approximately 30x30
+The default pick area is defined as a box of approximately 30x30
 pixels that encloses the search area.
 
 The move/draw/edit selector at the bottom of the plugin is used to
@@ -37,7 +37,7 @@ determine what operation is being done to the pick area:
   If there is no existing area, a default one will be created.
 * If "draw" is selected, then you can draw a shape with the cursor
   to enclose and define a new pick area.  The default shape is a
-  rectangle, but other shapes can be selected in the "Settings" tab.
+  box, but other shapes can be selected in the "Settings" tab.
 * If "edit" is selected, then you can edit the pick area by dragging its
   control points, or moving it by dragging in the bounding box.
 
@@ -133,7 +133,7 @@ this plot is not updated.
    "Readout" tab of ``Pick`` area.
 
 The "Readout" tab will be populated with a summary of the measurements.
-There are two buttons and two check boxes in this tab:
+There are two buttons and three check boxes in this tab:
 
 * The "Default Region" button restores the pick region to the default
   shape and size.
@@ -143,6 +143,8 @@ There are two buttons and two check boxes in this tab:
   This affects the behavior of the pick region as described above.
 * The "From Peak" check box changes the behavior of "Quick Mode" slightly
   as described above.
+* If "Center on pick" is checked, the shape will be recentered on the
+  located center, if found (i.e. the shape "tracks" the pick)
 
 .. figure:: figures/pick-controls.png
    :width: 400px
@@ -288,7 +290,6 @@ from ginga.gw import Widgets, Viewers
 from ginga.misc import Bunch
 from ginga.util import iqcalc, wcs, contour
 from ginga import GingaPlugin, colors, cmap, trcalc
-from ginga.util.six.moves import map
 
 try:
     from ginga.gw import Plot
@@ -324,9 +325,9 @@ class Pick(GingaPlugin.LocalPlugin):
         self.contour_interp_methods = trcalc.interpolation_methods
 
         # types of pick shapes that can be drawn
-        self.drawtypes = ['rectangle', 'box', 'squarebox',
+        self.drawtypes = ['box', 'squarebox', 'rectangle',
                           'circle', 'ellipse',
-                          'freepolygon', 'polygon', 'triangle',
+                          'freepolygon', 'polygon',
                           ]
 
         # get Pick preferences
@@ -349,6 +350,8 @@ class Pick(GingaPlugin.LocalPlugin):
         self.ev_intr = threading.Event()
         self.tmr_quick = fv.get_timer()
         self.tmr_quick.set_callback('expired', self.quick_timer_cb)
+        self._wd, self._ht = 400, 300
+        self._split_sizes = [self._ht, self._ht]
 
         self.last_rpt = []
         self.rpt_dict = OrderedDict({})
@@ -395,11 +398,12 @@ class Pick(GingaPlugin.LocalPlugin):
             self.canvas.add(self.cross)
 
         self.have_mpl = have_mpl
+        self.gui_up = False
 
     def sync_preferences(self):
         # Load various preferences
         self.pickcolor = self.settings.get('color_pick', 'green')
-        self.pickshape = self.settings.get('shape_pick', 'rectangle')
+        self.pickshape = self.settings.get('shape_pick', 'box')
         if self.pickshape not in self.drawtypes:
             self.pickshape = 'box'
         self.candidate_color = self.settings.get('color_candidate', 'orange')
@@ -426,6 +430,7 @@ class Pick(GingaPlugin.LocalPlugin):
         self.center_alg = self.settings.get('calc_center_alg', 'fwhm')
         self.fwhm_algs = ['gaussian', 'moffat']
         self.fwhm_alg = self.settings.get('calc_fwhm_alg', 'gaussian')
+        self.center_on_pick = self.settings.get('center_on_pick', False)
 
         # For controls
         self.delta_bg = self.settings.get('delta_bg', 0.0)
@@ -464,6 +469,7 @@ class Pick(GingaPlugin.LocalPlugin):
         box.set_spacing(2)
 
         paned = Widgets.Splitter(orientation=orientation)
+        self.w.splitter = paned
 
         nb = Widgets.TabWidget(tabpos='bottom')
         self.w.nb1 = nb
@@ -472,7 +478,7 @@ class Pick(GingaPlugin.LocalPlugin):
         cm, im = self.fv.cm, self.fv.im
 
         di = Viewers.CanvasView(logger=self.logger)
-        width, height = 400, 300
+        width, height = self._wd, self._ht
         di.set_desired_size(width, height)
         di.enable_autozoom('off')
         di.enable_autocuts('off')
@@ -496,6 +502,7 @@ class Pick(GingaPlugin.LocalPlugin):
         di.set_bg(0.4, 0.4, 0.4)
         # for debugging
         di.set_name('pickimage')
+        di.show_mode_indicator(True)
         self.pickimage = di
 
         bd = di.get_bindings()
@@ -552,9 +559,9 @@ class Pick(GingaPlugin.LocalPlugin):
             bd.enable_cmap(True)
 
             ci.set_desired_size(width, height)
+            ci.show_mode_indicator(True)
 
-            ciw = Viewers.GingaScrolledViewerWidget(viewer=ci)
-            ciw.scroll_bars(horizontal='on', vertical='on')
+            ciw = Viewers.GingaViewerWidget(viewer=ci)
             ciw.resize(width, height)
 
             nb.add_widget(ciw, title="Contour")
@@ -648,7 +655,8 @@ class Pick(GingaPlugin.LocalPlugin):
                      'Star Size:', 'label', 'Star Size', 'llabel'),
                     ('Sample Area:', 'label', 'Sample Area', 'llabel',
                      'Default Region', 'button', 'Pan to pick', 'button'),
-                    ('Quick Mode', 'checkbutton', 'From Peak', 'checkbutton'),
+                    ('Quick Mode', 'checkbutton', 'From Peak', 'checkbutton',
+                     'Center on pick', 'checkbutton'),
                     )
 
         w, b = Widgets.build_info(captions, orientation=orientation)
@@ -678,6 +686,10 @@ class Pick(GingaPlugin.LocalPlugin):
         ## b.drag_only.set_tooltip("In quick mode, require cursor press or follow cursor")
         ## b.drag_only.add_callback('activated', self.drag_only_cb)
         ## b.drag_only.set_state(self.drag_only)
+        b.center_on_pick.add_callback('activated', self.center_on_pick_cb)
+        b.center_on_pick.set_state(self.center_on_pick)
+        b.center_on_pick.set_tooltip("When peak is found, center shape\n"
+                                     "on peak.")
 
         vbox1 = Widgets.VBox()
         vbox1.add_widget(w, stretch=0)
@@ -1051,8 +1063,8 @@ class Pick(GingaPlugin.LocalPlugin):
 
         box.add_widget(fr, stretch=5)
         paned.add_widget(sw)
-        # hack to set a reasonable starting position for the splitter
-        paned.set_sizes([height, height])
+        paned.set_sizes(self._split_sizes)
+
         vtop.add_widget(paned, stretch=5)
 
         mode = self.canvas.get_draw_mode()
@@ -1098,6 +1110,7 @@ class Pick(GingaPlugin.LocalPlugin):
         vtop.add_widget(btns, stretch=0)
 
         container.add_widget(vtop, stretch=5)
+        self.gui_up = True
 
     def record_cb(self, w, tf):
         self.do_record = tf
@@ -1263,9 +1276,11 @@ class Pick(GingaPlugin.LocalPlugin):
         self.modes_off()
 
         self.canvas.ui_set_active(True)
-        self.fv.show_status("Draw a rectangle with the right mouse button")
+        self.fv.show_status("Draw a shape with the right mouse button")
 
     def stop(self):
+        self.gui_up = False
+        self._split_sizes = self.w.splitter.get_sizes()
         # Delete previous peak marks
         objs = self.canvas.get_objects_by_tag_pfx('peak')
         self.canvas.delete_objects(objs)
@@ -1522,6 +1537,12 @@ class Pick(GingaPlugin.LocalPlugin):
             point.x, point.y = obj_x, obj_y
             text.color = 'cyan'
 
+            if self.center_on_pick:
+                shape_obj.move_to_pt((obj_x, obj_y))
+                # reposition label above moved shape
+                _x1, _y1, x2, y2 = shape_obj.get_llur()
+                text.x, text.y = _x1, y2 + 4
+
             # Make report
             self.last_rpt = reports
             if self.do_record:
@@ -1735,7 +1756,7 @@ class Pick(GingaPlugin.LocalPlugin):
     def reset_region(self):
         self.dx = region_default_width
         self.dy = region_default_height
-        self.set_drawtype('rectangle')
+        self.set_drawtype('box')
 
         obj = self.pick_obj
         if obj.kind != 'compound':
@@ -1749,10 +1770,9 @@ class Pick(GingaPlugin.LocalPlugin):
         x2, y2 = data_x + rd_x, data_y + rd_y
 
         # replace shape
-        # TODO: makes sense to change this to 'box'
-        Rect = self.dc.Rectangle
-        tag = self.canvas.add(Rect(x1, y1, x2, y2,
-                                   color=self.pickcolor))
+        Box = self.dc.Box
+        tag = self.canvas.add(Box(data_x, data_y, self.dx // 2, self.dy // 2,
+                                  color=self.pickcolor))
 
         self.draw_cb(self.canvas, tag)
 
@@ -1961,15 +1981,14 @@ class Pick(GingaPlugin.LocalPlugin):
 
         else:
             # No object yet? Add a default one.
-            self.set_drawtype('rectangle')
+            self.set_drawtype('box')
             rd_x, rd_y = self.dx // 2, self.dy // 2
             x1, y1 = data_x - rd_x, data_y - rd_y
             x2, y2 = data_x + rd_x, data_y + rd_y
 
-            # TODO: makes sense to change this to 'box'
-            Rect = self.canvas.get_draw_class('rectangle')
-            tag = self.canvas.add(Rect(x1, y1, x2, y2,
-                                       color=self.pickcolor))
+            Box = self.canvas.get_draw_class('box')
+            tag = self.canvas.add(Box(data_x, data_y, rd_x, rd_y,
+                                      color=self.pickcolor))
 
             self.draw_cb(self.canvas, tag)
 
@@ -2050,6 +2069,10 @@ class Pick(GingaPlugin.LocalPlugin):
 
     def from_peak_cb(self, w, tf):
         self.from_peak = tf
+        return True
+
+    def center_on_pick_cb(self, w, tf):
+        self.center_on_pick = tf
         return True
 
     def drag_only_cb(self, w, tf):

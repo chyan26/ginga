@@ -2,15 +2,12 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import absolute_import
-
 from astLib import astWCS, astCoords
 # astlib requires pyfits (or astropy) in order
 # to create a WCS object from a FITS header.
 from astropy.io import fits as pyfits
 
-from ..six.moves import map
-from . import common
+from ginga.util.wcsmod import common
 
 astWCS.NUMPY_MODE = True
 

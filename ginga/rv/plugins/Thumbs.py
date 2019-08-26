@@ -23,13 +23,18 @@ image.
 The "Auto Scroll" checkbox, if checked, will cause the ``Thumbs`` pan to
 scroll to the active image.
 
+This plugin is not usually configured to be closeable, but the user can
+make it so by setting the "closeable" setting to True in the configuration
+file--then Close and Help buttons will be added to the bottom of the UI.
+
 """
 import os
+import math
 import time
 import threading
 
 from ginga import GingaPlugin
-from ginga import RGBImage
+from ginga import RGBImage, BaseImage
 from ginga.misc import Bunch
 from ginga.util import iohelper
 from ginga.gw import Widgets, Viewers
@@ -53,16 +58,18 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         self.thumb_col_count = 0
         self._wd = 300
         self._ht = 400
-        self._cmxoff = 10
-        self._cmyoff = 10
-        self._max_y = 0
+        self._cmxoff = 0
+        self._cmyoff = 0
+        self._displayed_thumb_dict = {}
         tt_keywords = ['OBJECT', 'FRAMEID', 'UT', 'DATE-OBS']
+
+        spec = self.fv.get_plugin_spec(str(self))
 
         prefs = self.fv.get_preferences()
         self.settings = prefs.create_category('plugin_Thumbs')
         self.settings.add_defaults(cache_thumbs=False,
                                    cache_location='local',
-                                   auto_scroll=True,
+                                   auto_scroll=False,
                                    rebuild_wait=0.5,
                                    tt_keywords=tt_keywords,
                                    mouseover_name_key='NAME',
@@ -76,20 +83,25 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                                    label_font_color='white',
                                    label_font_size=10,
                                    label_bg_color='lightgreen',
-                                   thumb_pan_accel=1.5)
+                                   autoload_visible_thumbs=True,
+                                   autoload_interval=1.0,
+                                   closeable=not spec.get('hidden', False),
+                                   transfer_attrs=['transforms',
+                                                   'cutlevels', 'rgbmap'])
         self.settings.load(onError='silent')
         # max length of thumb on the long side
         self.thumb_width = self.settings.get('thumb_length', 180)
         # distance in pixels between thumbs
         self.thumb_hsep = self.settings.get('thumb_hsep', 15)
         self.thumb_vsep = self.settings.get('thumb_vsep', 15)
+        self.transfer_attrs = self.settings.get('transfer_attrs', [])
 
         # Build our thumb generator
         tg = CanvasView(logger=self.logger)
         tg.configure_surface(self.thumb_width, self.thumb_width)
         tg.enable_autozoom('on')
-        tg.set_autocut_params('zscale')
-        tg.enable_autocuts('override')
+        tg.set_autocut_params('histogram')
+        tg.enable_autocuts('on')
         tg.enable_auto_orient(True)
         tg.defer_redraw = False
         tg.set_bg(0.7, 0.7, 0.7)
@@ -99,6 +111,13 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         self.thmbtask.set_callback('expired', self.redo_delay_timer)
         self.lagtime = self.settings.get('rebuild_wait', 0.5)
         self.thmblock = threading.RLock()
+        self.timer_autoload = fv.get_timer()
+        self.timer_autoload.set_callback('expired', self.timer_autoload_cb)
+        self.autoload_interval = self.settings.get('autoload_interval',
+                                                   1.0)
+        self.autoload_visible = self.settings.get('autoload_visible_thumbs',
+                                                  False)
+        self._to_build = set([])
 
         # this will hold the thumbnails pane viewer
         self.c_view = None
@@ -126,8 +145,8 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         vbox.set_border_width(4)
         vbox.set_spacing(2)
 
-        # construct an interaactive viewer to view and scroll
-        # the RGB image, and to let the user pick the cmap
+        # construct an interactive viewer to view and scroll
+        # the thumbs pane
         self.c_view = Viewers.CanvasView(logger=self.logger)
         c_v = self.c_view
         c_v.set_desired_size(self._wd, self._ht)
@@ -135,6 +154,7 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         c_v.enable_autocuts('off')
         c_v.set_pan(0, 0)
         c_v.scale_to(1.0, 1.0)
+        # Y-axis flipped
         c_v.transform(False, True, False)
         c_v.cut_levels(0, 255)
         c_v.set_bg(0.4, 0.4, 0.4)
@@ -142,6 +162,7 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         c_v.set_name('cmimage')
         c_v.add_callback('configure', self.thumbpane_resized_cb)
         c_v.add_callback('drag-drop', self.drag_drop_cb)
+        c_v.get_settings().get_setting('pan').add_callback('set', self.thumbs_pan_cb)
 
         canvas = c_v.get_canvas()
         canvas.register_for_cursor_drawing(c_v)
@@ -151,7 +172,6 @@ class Thumbs(GingaPlugin.GlobalPlugin):
 
         bd = c_v.get_bindings()
         bd.enable_pan(True)
-        # disable zooming  TODO: reconsider--could be useful
         bd.enable_zoom(False)
         bd.enable_cmap(False)
 
@@ -165,10 +185,12 @@ class Thumbs(GingaPlugin.GlobalPlugin):
 
         iw = Viewers.GingaScrolledViewerWidget(c_v)
         iw.resize(self._wd, self._ht)
+        iw.scroll_bars(horizontal='auto', vertical='auto')
 
         vbox.add_widget(iw, stretch=1)
 
-        captions = (('Auto scroll', 'checkbutton', 'Clear', 'button'),)
+        captions = (('Auto scroll', 'checkbutton', 'Clear', 'button'),
+                    )
         w, b = Widgets.build_info(captions)
         self.w.update(b)
 
@@ -176,9 +198,23 @@ class Thumbs(GingaPlugin.GlobalPlugin):
             "Scroll the thumbs window when new images arrive")
         b.clear.set_tooltip("Remove all current thumbnails")
         b.clear.add_callback('activated', lambda w: self.clear())
-        auto_scroll = self.settings.get('auto_scroll', True)
+        auto_scroll = self.settings.get('auto_scroll', False)
         b.auto_scroll.set_state(auto_scroll)
         vbox.add_widget(w, stretch=0)
+
+        if self.settings.get('closeable', False):
+            btns = Widgets.HBox()
+            btns.set_border_width(4)
+            btns.set_spacing(4)
+
+            btn = Widgets.Button("Close")
+            btn.add_callback('activated', lambda w: self.close())
+            btns.add_widget(btn)
+            btn = Widgets.Button("Help")
+            btn.add_callback('activated', lambda w: self.help())
+            btns.add_widget(btn, stretch=0)
+            btns.add_widget(Widgets.Label(''), stretch=1)
+            vbox.add_widget(btns, stretch=0)
 
         container.add_widget(vbox, stretch=1)
 
@@ -188,7 +224,25 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         """Punt drag-drops to the ginga shell.
         """
         channel = self.fv.get_current_channel()
-        self.fv.dragdrop(channel.viewer, urls)
+        if channel is None:
+            return
+        self.fv.open_uris(urls, chname=channel.name, bulk_add=True)
+        return True
+
+    def start(self):
+        self.add_visible_thumbs()
+
+    def stop(self):
+        self.gui_up = False
+
+    def close(self):
+        # clear current thumbs
+        canvas = self.c_view.get_canvas()
+        canvas.delete_all_objects()
+        self._displayed_thumb_dict = dict()
+
+        self.fv.stop_global_plugin(str(self))
+        self.c_view = None
         return True
 
     def _get_thumb_key(self, chname, image):
@@ -223,6 +277,9 @@ class Thumbs(GingaPlugin.GlobalPlugin):
 
     def add_image_info_cb(self, viewer, channel, info):
 
+        genthumb = channel.settings.get('genthumb', True)
+        if not genthumb:
+            return False
         save_thumb = self.settings.get('cache_thumbs', False)
 
         # Do we already have this thumb loaded?
@@ -294,8 +351,10 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         if len(invalid) > 0:
             with self.thmblock:
                 for thumbkey in invalid:
-                    self.thumb_list.remove(thumbkey)
-                    del self.thumb_dict[thumbkey]
+                    if thumbkey in self.thumb_list:
+                        self.thumb_list.remove(thumbkey)
+                    if thumbkey in self.thumb_dict:
+                        del self.thumb_dict[thumbkey]
                     self._tkf_highlight.discard(thumbkey)
 
         self.fv.gui_do_oneshot('thumbs-reorder', self.reorder_thumbs)
@@ -307,11 +366,8 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         self.logger.debug("thumbs resized, width=%d" % (width))
 
         with self.thmblock:
+            self._cmxoff = -width // 2 + 10
             cols = max(1, width // (self.thumb_width + self.thumb_hsep))
-            if self.thumb_num_cols == cols:
-                # If we have not actually changed the possible number of columns
-                # then don't do anything
-                return False
             self.logger.debug("column count is now %d" % (cols))
             self.thumb_num_cols = cols
 
@@ -328,7 +384,10 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         with self.thmblock:
             self.thumb_list = []
             self.thumb_dict = {}
+            self._displayed_thumb_dict = {}
             self._tkf_highlight = set([])
+            self.canvas.delete_all_objects(redraw=False)
+            self.canvas.update_canvas(whence=0)
 
         self.fv.gui_do_oneshot('thumbs-reorder', self.reorder_thumbs)
 
@@ -360,7 +419,6 @@ class Thumbs(GingaPlugin.GlobalPlugin):
             if self.have_thumbnail(fitsimage, image):
                 # schedule an update of the thumbnail to pick up changes
                 self.redo_delay(fitsimage)
-
         else:
             # no image has the focus
             new_highlight = set([])
@@ -391,6 +449,37 @@ class Thumbs(GingaPlugin.GlobalPlugin):
     def redo_delay_timer(self, timer):
         self.fv.gui_do(self.redo_thumbnail, timer.data.fitsimage)
 
+    def timer_autoload_cb(self, timer):
+        self.logger.debug("autoload missing thumbs")
+
+        with self.thmblock:
+            if len(self._to_build) == 0:
+                return
+            thumbkey = self._to_build.pop()
+            bnch = self.thumb_dict[thumbkey]
+
+        self.fv.nongui_do(self.force_load_for_thumb, thumbkey, bnch, timer)
+
+    def force_load_for_thumb(self, thumbkey, bnch, timer):
+        placeholder = bnch.image.get_image().get('placeholder', False)
+        path = bnch.info.path
+        if placeholder and (path is not None):
+            self.logger.debug("autoload missing [%s]" % (path))
+            info = bnch.info
+            chname = thumbkey[0]
+            channel = self.fv.get_channel(chname)
+            try:
+                image = self.fv.load_image(path, show_error=False)
+                self.logger.debug("loaded [%s]" % (path))
+                self.fv.gui_do(channel.add_image_update, image, info,
+                               update_viewer=False)
+            except Exception as e:
+                # load errors will be reported in self.fv.load_image()
+                # Just ignore autoload errors for now...
+                pass
+
+        timer.cond_set(0.10)
+
     def update_highlights(self, old_highlight_set, new_highlight_set):
         """Unhighlight the thumbnails represented by `old_highlight_set`
         and highlight the ones represented by new_highlight_set.
@@ -417,7 +506,8 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                     namelbl = self.thumb_dict[thumbkey].get('namelbl')
                     namelbl.color = bg
 
-        self.c_view.redraw(whence=3)
+        if self.gui_up:
+            self.c_view.redraw(whence=3)
 
     def redo(self, channel, image):
         """This method is called when an image is set in a channel."""
@@ -464,7 +554,7 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         path = image.get('path', None)
         if path is not None:
             path = os.path.abspath(path)
-            name = self.fv.name_image_from_path(path, idx=idx)
+            name = iohelper.name_image_from_path(path, idx=idx)
         else:
             name = 'NoName'
 
@@ -497,7 +587,8 @@ class Thumbs(GingaPlugin.GlobalPlugin):
 
     def redo_thumbnail_image(self, channel, image, info, save_thumb=None):
         # image is flagged not to make a thumbnail?
-        nothumb = image.get('nothumb', False)
+        nothumb = (image.get('nothumb', False) or
+                   not channel.settings.get('genthumb', True))
         if nothumb:
             return
 
@@ -533,7 +624,8 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                         os.remove(thumbpath)
                     thmb_image.save_as_file(thumbpath)
 
-        self.update_thumbnail(thumbkey, thmb_image, metadata)
+            self.update_thumbnail(thumbkey, thmb_image, metadata)
+        self.fv.update_pending()
 
     def delete_channel_cb(self, viewer, channel):
         """Called when a channel is deleted from the main interface.
@@ -549,8 +641,10 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                 if chname != chname_del:
                     new_thumb_list.append(thumbkey)
                 else:
-                    del self.thumb_dict[thumbkey]
+                    if thumbkey in self.thumb_dict:
+                        del self.thumb_dict[thumbkey]
                     un_hilite_set.add(thumbkey)
+
             self.thumb_list = new_thumb_list
             self._tkf_highlight -= un_hilite_set  # Unhighlight
 
@@ -605,6 +699,16 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         rect.y2 = rect.y1 + b + 4
 
         obj = canvas.dc.CompoundObject(*l)
+
+        # sanity check and adjustment so that popup will be minimally obscured
+        # by a window edge
+        x3, y3, x4, y4 = viewer.get_datarect()
+        if rect.x2 > x4:
+            off = rect.x2 - x4
+            rect.x1 -= off
+            rect.x2 -= off
+            point.x -= off
+
         return obj
 
     def show_tt(self, obj, canvas, event, pt,
@@ -623,15 +727,23 @@ class Thumbs(GingaPlugin.GlobalPlugin):
 
     def _regen_thumb_image(self, image, viewer):
         self.logger.debug("generating new thumbnail")
-        if viewer is not None:
-            viewer.copy_attributes(self.thumb_generator,
-                                   ['transforms', 'cutlevels', 'rgbmap'])
 
-        thumb_np = image.get_thumbnail(self.thumb_width)
-        self.thumb_generator.set_data(thumb_np)
+        if not isinstance(image, BaseImage.BaseImage):
+            # this is not a regular image type
+            image = RGBImage.RGBImage()
+            tmp_path = os.path.join(icondir, 'fits.png')
+            image.load_file(tmp_path)
+
+        self.thumb_generator.set_image(image)
+        if viewer is not None:
+            v_img = viewer.get_image()
+            if v_img is not None:
+                viewer.copy_attributes(self.thumb_generator,
+                                       self.transfer_attrs)
 
         rgb_img = self.thumb_generator.get_image_as_array()
         thmb_image = RGBImage.RGBImage(rgb_img)
+        thmb_image.set(placeholder=False)
         return thmb_image
 
     def _get_thumb_image(self, channel, info, image):
@@ -665,13 +777,14 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                 self.logger.warning("Error generating thumbnail: %s" % (str(e)))
 
         thmb_image = RGBImage.RGBImage()
-        thmb_image.set(name=info.name)
+        thmb_image.set(name=info.name, placeholder=False)
 
         # Choice [C]: is there a cached thumbnail image on disk we can use?
         if (thumbpath is not None) and os.path.exists(thumbpath):
             try:
                 # try to load the thumbnail image
                 thmb_image.load_file(thumbpath)
+                thmb_image = self._regen_thumb_image(thmb_image, None)
                 thumb_extra.rgbimg = thmb_image
                 return thmb_image
 
@@ -681,7 +794,7 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         # Choice [D]: load a placeholder image
         tmp_path = os.path.join(icondir, 'fits.png')
         thmb_image.load_file(tmp_path)
-        thmb_image.set(path=None)
+        thmb_image.set(path=None, placeholder=True)
 
         return thmb_image
 
@@ -730,27 +843,89 @@ class Thumbs(GingaPlugin.GlobalPlugin):
         return thumbpath
 
     def _calc_thumb_pos(self, row, col):
+        self.logger.debug("row, col = %d, %d" % (row, col))
         # TODO: should really be text ht
         text_ht = self.thumb_vsep
 
-        # calc in window coords
+        # calc in data coords
+        thumb_height = self.thumb_width
         twd_hplus = self.thumb_width + self.thumb_hsep
-        twd_vplus = self.thumb_width + text_ht + self.thumb_vsep
+        twd_vplus = thumb_height + text_ht + self.thumb_vsep
         xt = self._cmxoff + (col * twd_hplus)
-        yt = self._cmyoff + (row * twd_vplus) + text_ht
+        yt = self._cmyoff + (row * twd_vplus)
 
         # position of image
         xi = xt
         yi = yt + 6
+        self.logger.debug("xt, yt = %d, %d" % (xt, yt))
 
-        # convert to data coords
-        crdmap = self.c_view.get_coordmap('window')
-        xtd, ytd = crdmap.to_data((xt, yt))
-        xid, yid = crdmap.to_data((xi, yi))
+        return (xt, yt, xi, yi)
 
-        return (xtd, ytd, xid, yid)
+    def get_visible_thumbs(self):
+        if not self.gui_up:
+            return []
+        x1, y1, x2, y2 = self.c_view.get_datarect()
+        self.logger.debug("datarect=(%f, %f, %f, %f)", x1, y1, x2, y2)
 
-    def insert_thumbnail(self, imgwin, thumbkey, chname,
+        # TODO: should really be text ht
+        text_ht = self.thumb_vsep
+
+        # calc in data coords
+        thumb_height = self.thumb_width
+        twd_vplus = thumb_height + text_ht + self.thumb_vsep
+        row1 = int(math.floor(abs(y1) / twd_vplus) - 2)
+        row2 = int(math.ceil(abs(y2) / twd_vplus) + 2)
+        self.logger.debug("row1, row2 = %d, %d" % (row1, row2))
+        i = max(0, row1 * self.thumb_num_cols)
+        j = min(len(self.thumb_list) - 1, row2 * self.thumb_num_cols)
+        self.logger.debug("i, j = %d, %d" % (i, j))
+        thumbs = [self.thumb_list[n] for n in range(i, j + 1)]
+        return thumbs
+
+    def add_visible_thumbs(self):
+        if not self.gui_up:
+            return
+        canvas = self.c_view.get_canvas()
+
+        with self.thmblock:
+            thumb_keys = set(self.get_visible_thumbs())
+            old_thumb_keys = set(self._displayed_thumb_dict.keys())
+            if old_thumb_keys == thumb_keys:
+                # no need to do anything
+                self.c_view.redraw(whence=0)
+                return
+
+            to_delete = old_thumb_keys - thumb_keys
+            to_add = thumb_keys - old_thumb_keys
+
+            # make a copy of these for potential building thumbs
+            self._to_build = set(thumb_keys)
+
+            # delete thumbs from canvas that are no longer visible
+            for thumbkey in to_delete:
+                bnch = self._displayed_thumb_dict[thumbkey]
+                canvas.delete_object(bnch.widget, redraw=False)
+
+            # update displayed thumbs dict
+            self._displayed_thumb_dict = {thumbkey: self.thumb_dict[thumbkey]
+                                          for thumbkey in thumb_keys}
+
+            # add newly-visible thumbs to canvas
+            for thumbkey in to_add:
+                bnch = self.thumb_dict[thumbkey]
+                canvas.add(bnch.widget, redraw=False)
+
+            self.c_view.redraw(whence=0)
+
+        self.fv.update_pending()
+        if self.autoload_visible:
+            # load and create thumbnails for any placeholder icons
+            self.timer_autoload.set(self.autoload_interval)
+
+    def thumbs_pan_cb(self, viewer, pan_vec):
+        self.fv.gui_do_oneshot('thumbs_pan', self.add_visible_thumbs)
+
+    def insert_thumbnail(self, thumb_img, thumbkey, chname,
                          thumbpath, metadata, info):
 
         thumbname = info.name
@@ -768,7 +943,7 @@ class Thumbs(GingaPlugin.GlobalPlugin):
             text = self._mk_tooltip_text(metadata)
             thumb_extra.tooltip = text
 
-        canvas = self.c_view.get_canvas()
+        canvas = self.thumb_generator.get_canvas()
         fg = self.settings.get('label_font_color', 'black')
         fontsize = self.settings.get('label_font_size', 10)
 
@@ -795,7 +970,7 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                                      fontsize=fontsize, coord='data')
             l2.append(namelbl)
 
-            image = canvas.dc.Image(xi, yi, imgwin, alpha=1.0,
+            image = canvas.dc.Image(xi, yi, thumb_img, alpha=1.0,
                                     linewidth=1, color='black', coord='data')
             l2.append(image)
 
@@ -825,38 +1000,44 @@ class Thumbs(GingaPlugin.GlobalPlugin):
 
             # thumb will be added to canvas later in reorder_thumbs()
 
-        sort_order = self.settings.get('sort_order', None)
-        if sort_order:
-            self.thumb_list.sort()
+            sort_order = self.settings.get('sort_order', None)
+            if sort_order:
+                self.thumb_list.sort()
+            self.logger.debug("added thumb for %s" % (info.name))
 
-        self.fv.gui_do_oneshot('thumbs-reorder', self.reorder_thumbs)
+        self.fv.gui_do_oneshot('thumbs-reorder', self.reorder_thumbs,
+                               new_thumbkey=thumbkey)
 
-        self.logger.debug("added thumb for %s" % (info.name))
-
-    def _auto_scroll(self, xi, yi):
+    def auto_scroll(self, thumbkey):
+        """Scroll the window to the thumb."""
+        if not self.gui_up:
+            return
         # force scroll to bottom of thumbs, if checkbox is set
         scrollp = self.w.auto_scroll.get_state()
-        if scrollp:
-            # override X parameter because we only want to scroll vertically
-            pan_x, pan_y = self.c_view.get_pan()
-            self.c_view.panset_xy(pan_x, yi)
+        if not scrollp:
+            return
+
+        bnch = self.thumb_dict[thumbkey]
+
+        # override X parameter because we only want to scroll vertically
+        pan_x, pan_y = self.c_view.get_pan()
+        self.c_view.panset_xy(pan_x, bnch.image.y)
 
     def clear_widget(self):
         """
         Clears the thumbnail display widget of all thumbnails, but does
         not remove them from the thumb_dict or thumb_list.
         """
+        if not self.gui_up:
+            return
         canvas = self.c_view.get_canvas()
         canvas.delete_all_objects()
         self.c_view.redraw(whence=0)
 
-    def reorder_thumbs(self):
+    def reorder_thumbs(self, new_thumbkey=None):
         self.logger.debug("Reordering thumb grid")
-        canvas = self.c_view.get_canvas()
-
         xi, yi = None, None
         with self.thmblock:
-            self.clear_widget()
 
             # Add thumbs back in by rows
             self.thumb_col_count = 0
@@ -875,17 +1056,16 @@ class Thumbs(GingaPlugin.GlobalPlugin):
                 bnch.image.x, bnch.image.y = xi, yi
                 bnch.widget.set_data(row=row, col=col)
 
-                canvas.add(bnch.widget, redraw=False)
-
         if xi is not None:
-            xi += self.thumb_width
+            xi += self.thumb_width * 2
             xm, ym, x_, y_ = self._calc_thumb_pos(0, 0)
-            self.c_view.set_limits([(xm, ym), (xi, yi)], coord='data')
-            self._auto_scroll(xi, yi)
+            if self.gui_up:
+                self.c_view.set_limits([(xm, ym), (xi, yi)], coord='data')
 
-        self.c_view.redraw(whence=0)
-        self.fv.update_pending()
+        if new_thumbkey is not None:
+            self.auto_scroll(new_thumbkey)
 
+        self.add_visible_thumbs()
         self.logger.debug("Reordering done")
 
     def _mk_tooltip_text(self, metadata):
@@ -944,7 +1124,8 @@ class Thumbs(GingaPlugin.GlobalPlugin):
             bnch.image.image = thmb_image
             thumb_extra.rgbimg = thmb_image
 
-            self.c_view.redraw(whence=0)
+            if self.gui_up:
+                self.c_view.redraw(whence=0)
             self.logger.debug("update finished.")
 
     def __str__(self):

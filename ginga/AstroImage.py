@@ -7,16 +7,15 @@
 import sys
 import math
 import traceback
+from collections import OrderedDict
 
-import numpy
+import numpy as np
 
-from ginga.util import wcsmod, io_fits
+from ginga.util import wcsmod, io_fits, io_asdf
 from ginga.util import wcs, iqcalc
 from ginga.BaseImage import BaseImage, ImageError, Header
 from ginga.misc import Bunch
 from ginga import trcalc
-import ginga.util.six as six
-from ginga.util.six.moves import map
 
 
 class AstroHeader(Header):
@@ -43,7 +42,7 @@ class AstroImage(BaseImage):
 
     def __init__(self, data_np=None, metadata=None, logger=None,
                  name=None, wcsclass=None, ioclass=None,
-                 inherit_primary_header=False):
+                 inherit_primary_header=False, save_primary_header=True):
 
         BaseImage.__init__(self, data_np=data_np, metadata=metadata,
                            logger=logger, name=name)
@@ -67,8 +66,9 @@ class AstroImage(BaseImage):
         self.io.register_type('image', self.__class__)
 
         self.inherit_primary_header = inherit_primary_header
-        if self.inherit_primary_header:
-            # User wants to inherit from primary header--this will hold it
+        self.save_primary_header = inherit_primary_header or save_primary_header
+        if self.save_primary_header:
+            # User wants to save/inherit from primary header--this will hold it
             self._primary_hdr = AstroHeader()
         else:
             self._primary_hdr = None
@@ -85,11 +85,11 @@ class AstroImage(BaseImage):
     def setup_data(self, data, naxispath=None):
         # initialize data attribute to something reasonable
         if data is None:
-            data = numpy.zeros((0, 0))
-        elif not isinstance(data, numpy.ndarray):
-            data = numpy.zeros((0, 0))
+            data = np.zeros((0, 0))
+        elif not isinstance(data, np.ndarray):
+            data = np.zeros((0, 0))
         elif 0 in data.shape:
-            data = numpy.zeros((0, 0))
+            data = np.zeros((0, 0))
         elif len(data.shape) < 2:
             # Expand 1D arrays into 1xN array
             data = data.reshape((1, data.shape[0]))
@@ -99,7 +99,7 @@ class AstroImage(BaseImage):
 
         # this will get reset in set_naxispath() if array is
         # multidimensional
-        self._data = data
+        self._data = self._md_data
 
         if naxispath is None:
             naxispath = []
@@ -129,16 +129,59 @@ class AstroImage(BaseImage):
         else:  # This ensures get_header() is consistent
             self.inherit_primary_header = inherit_primary_header
 
-        if inherit_primary_header and (fobj is not None):
+        save_primary_header = (self.save_primary_header or
+                               inherit_primary_header)
+        if save_primary_header and (fobj is not None):
             if self._primary_hdr is None:
                 self._primary_hdr = AstroHeader()
 
             self.io.fromHDU(fobj[0], self._primary_hdr)
 
-        self.setup_data(hdu.data)
+        self.setup_data(hdu.data, naxispath=naxispath)
 
         # Try to make a wcs object on the header
-        self.wcs.load_header(hdu.header, fobj=fobj)
+        if hasattr(self, 'wcs') and self.wcs is not None:
+            self.wcs.load_header(hdu.header, fobj=fobj)
+
+    def load_nddata(self, ndd, naxispath=None):
+        """Load from an astropy.nddata.NDData object.
+        """
+        self.clear_metadata()
+
+        # Make a header based on any NDData metadata
+        ahdr = self.get_header()
+        ahdr.update(ndd.meta)
+
+        self.setup_data(ndd.data, naxispath=naxispath)
+
+        if ndd.wcs is None:
+            # no wcs in ndd obj--let's try to make one from the header
+            self.wcs = wcsmod.WCS(logger=self.logger)
+            self.wcs.load_header(ahdr)
+        else:
+            # already have a valid wcs in the ndd object
+            # we assume it needs an astropy compatible wcs
+            wcsinfo = wcsmod.get_wcs_class('astropy')
+            self.wcs = wcsinfo.wrapper_class(logger=self.logger)
+            self.wcs.load_nddata(ndd)
+
+    def load_asdf(self, asdf_obj, **kwargs):
+        """
+        Load from an ASDF object.
+        See :func:`ginga.util.io_asdf.load_asdf` for more info.
+        """
+        self.clear_metadata()
+
+        data, wcs, ahdr = io_asdf.load_asdf(asdf_obj, **kwargs)
+
+        self.setup_data(data, naxispath=None)
+
+        wcsinfo = wcsmod.get_wcs_class('astropy_ape14')
+        self.wcs = wcsinfo.wrapper_class(logger=self.logger)
+        self.wcs.wcs = wcs
+
+        if wcs is not None:
+            self.wcs.coordsys = wcs.output_frame.name
 
     def load_file(self, filespec, **kwargs):
 
@@ -158,7 +201,7 @@ class AstroImage(BaseImage):
 
     def load_buffer(self, buf, dims, dtype, byteswap=False,
                     naxispath=None, metadata=None):
-        data = numpy.fromstring(buf, dtype=dtype)
+        data = np.fromstring(buf, dtype=dtype)
         if byteswap:
             data.byteswap(True)
         data = data.reshape(dims)
@@ -175,7 +218,7 @@ class AstroImage(BaseImage):
         revnaxis.reverse()
 
         # construct slice view and extract it
-        view = revnaxis + [slice(None), slice(None)]
+        view = tuple(revnaxis + [slice(None), slice(None)])
         data = self.get_mddata()[view]
 
         if len(data.shape) != 2:
@@ -196,13 +239,16 @@ class AstroImage(BaseImage):
     def get_data_size(self):
         return self.get_size()
 
-    def get_header(self, create=True):
+    def get_header(self, create=True, include_primary_header=None):
         try:
             # By convention, the fits header is stored in a dictionary
             # under the metadata keyword 'header'
             hdr = self.metadata['header']
 
-            if self.inherit_primary_header and self._primary_hdr is not None:
+            if include_primary_header is None:
+                include_primary_header = self.inherit_primary_header
+
+            if include_primary_header and self._primary_hdr is not None:
                 # Inherit PRIMARY header for display but keep metadata intact
                 displayhdr = AstroHeader()
                 for key in hdr.keyorder:
@@ -255,7 +301,7 @@ class AstroImage(BaseImage):
             hdr[kwd.upper()] = val
 
         # Try to make a wcs object on the header
-        if hasattr(self, 'wcs'):
+        if hasattr(self, 'wcs') and self.wcs is not None:
             self.wcs.load_header(hdr)
 
     def set_keywords(self, **kwds):
@@ -273,9 +319,12 @@ class AstroImage(BaseImage):
             self.metadata[key] = val
 
         # refresh the WCS
-        if hasattr(self, 'wcs'):
+        if hasattr(self, 'wcs') and self.wcs is not None:
             header = self.get_header()
             self.wcs.load_header(header)
+
+    def has_primary_header(self):
+        return self._primary_hdr is not None
 
     def clear_all(self):
         # clear metadata and data
@@ -294,6 +343,48 @@ class AstroImage(BaseImage):
         other = AstroImage(data, logger=self.logger)
         self.transfer(other, astype=astype)
         return other
+
+    def as_nddata(self, nddata_class=None):
+        "Return a version of ourself as an astropy.nddata.NDData object"
+        if nddata_class is None:
+            from astropy.nddata import NDData
+            nddata_class = NDData
+
+        # transfer header, preserving ordering
+        ahdr = self.get_header()
+        header = OrderedDict(ahdr.items())
+        data = self.get_mddata()
+
+        wcs = None
+        if hasattr(self, 'wcs') and self.wcs is not None:
+            # for now, assume self.wcs wraps an astropy wcs object
+            wcs = self.wcs.wcs
+
+        ndd = nddata_class(data, wcs=wcs, meta=header)
+        return ndd
+
+    def as_hdu(self):
+        "Return a version of ourself as an astropy.io.fits.PrimaryHDU object"
+        from astropy.io import fits
+
+        # transfer header, preserving ordering
+        ahdr = self.get_header()
+        header = fits.Header(ahdr.items())
+        data = self.get_mddata()
+
+        hdu = fits.PrimaryHDU(data=data, header=header)
+        return hdu
+
+    def astype(self, type_name):
+        """Convert AstroImage object to some other kind of object.
+        """
+        if type_name == 'nddata':
+            return self.as_nddata()
+
+        if type_name == 'hdu':
+            return self.as_hdu()
+
+        raise ValueError("Unrecognized conversion type '%s'" % (type_name))
 
     def save_as_file(self, filepath, **kwdargs):
         data = self._get_data()
@@ -324,7 +415,8 @@ class AstroImage(BaseImage):
         return self.wcs.radectopix(ra_deg, dec_deg, coords=coords,
                                    naxispath=self.revnaxis)
 
-    # -----> TODO: merge into wcs.py ?
+    # -----> TODO:
+    #   This section has been merged into util.wcs.  Deprecate it here.
     #
     def get_starsep_XY(self, x1, y1, x2, y2):
         # source point
@@ -382,11 +474,11 @@ class AstroImage(BaseImage):
 
         # Get east and north coordinates
         xe, ye = self.add_offset_xy(x, y, len_deg_e, 0.0)
-        xe = int(round(xe))
-        ye = int(round(ye))
+        xe = int(np.round(xe))
+        ye = int(np.round(ye))
         xn, yn = self.add_offset_xy(x, y, 0.0, len_deg_n)
-        xn = int(round(xn))
-        yn = int(round(yn))
+        xn = int(np.round(xn))
+        yn = int(np.round(yn))
 
         return (x, y, xn, yn, xe, ye)
 
@@ -416,7 +508,7 @@ class AstroImage(BaseImage):
 
         return self.calc_compass_radius(x, y, radius_px)
     #
-    # <----- TODO: merge this into wcs.py ?
+    # <----- TODO: deprecate
 
     def get_wcs_rotation_deg(self):
         header = self.get_header()
@@ -456,6 +548,9 @@ class AstroImage(BaseImage):
             count += 1
 
             data_np = image._get_data()
+            if 0 in data_np.shape:
+                self.logger.info("Skipping image with zero length axis")
+                continue
 
             # Calculate sky position at the center of the piece
             ctr_x, ctr_y = trcalc.get_center(data_np)
@@ -479,8 +574,8 @@ class AstroImage(BaseImage):
 
             # Determine max/min to update our values
             if update_minmax:
-                maxval = numpy.nanmax(data_np)
-                minval = numpy.nanmin(data_np)
+                maxval = np.nanmax(data_np)
+                minval = np.nanmin(data_np)
                 self.maxval = max(self.maxval, maxval)
                 self.minval = min(self.minval, minval)
 
@@ -493,8 +588,8 @@ class AstroImage(BaseImage):
 
             # scale if necessary
             # TODO: combine with rotation?
-            if (not numpy.isclose(math.fabs(cdelt1), scale_x) or
-                    not numpy.isclose(math.fabs(cdelt2), scale_y)):
+            if (not np.isclose(math.fabs(cdelt1), scale_x) or
+                not np.isclose(math.fabs(cdelt2), scale_y)):
                 nscale_x = math.fabs(cdelt1) / scale_x
                 nscale_y = math.fabs(cdelt2) / scale_y
                 self.logger.debug("scaling piece by x(%f), y(%f)" % (
@@ -510,8 +605,8 @@ class AstroImage(BaseImage):
             flip_y = False
 
             # Optomization for 180 rotations
-            if (numpy.isclose(math.fabs(rot_dx), 180.0) or
-                    numpy.isclose(math.fabs(rot_dy), 180.0)):
+            if (np.isclose(math.fabs(rot_dx), 180.0) or
+                np.isclose(math.fabs(rot_dy), 180.0)):
                 rotdata = trcalc.transform(data_np,
                                            flip_x=True, flip_y=True)
                 rot_dx = 0.0
@@ -520,7 +615,7 @@ class AstroImage(BaseImage):
                 rotdata = data_np
 
             # Finish with any necessary rotation of piece
-            if not numpy.isclose(rot_dy, 0.0):
+            if not np.isclose(rot_dy, 0.0):
                 rot_deg = rot_dy
                 self.logger.debug("rotating %s by %f deg" % (name, rot_deg))
                 rotdata = trcalc.rotate(rotdata, rot_deg,
@@ -528,11 +623,11 @@ class AstroImage(BaseImage):
                                         logger=self.logger)
 
             # Flip X due to negative CDELT1
-            if numpy.sign(cdelt1) != numpy.sign(cdelt1_ref):
+            if np.sign(cdelt1) != np.sign(cdelt1_ref):
                 flip_x = True
 
             # Flip Y due to negative CDELT2
-            if numpy.sign(cdelt2) != numpy.sign(cdelt2_ref):
+            if np.sign(cdelt2) != np.sign(cdelt2_ref):
                 flip_y = True
 
             if flip_x or flip_y:
@@ -549,7 +644,7 @@ class AstroImage(BaseImage):
             # Merge piece as closely as possible into our array
             # Unfortunately we lose a little precision rounding to the
             # nearest pixel--can't be helped with this approach
-            x0, y0 = int(round(x0)), int(round(y0))
+            x0, y0 = int(np.round(x0)), int(np.round(y0))
             self.logger.debug("Fitting image '%s' into mosaic at %d,%d" % (
                 name, x0, y0))
 
@@ -606,7 +701,7 @@ class AstroImage(BaseImage):
                                     (expand_pct * 100, max_expand_pct))
 
                 # go for it!
-                new_data = numpy.zeros((new_ht, new_wd))
+                new_data = np.zeros((new_ht, new_wd))
                 # place current data into new data
                 new_data[ny1_off:ny1_off + myht, nx1_off:nx1_off + mywd] = \
                     mydata
@@ -658,7 +753,7 @@ class AstroImage(BaseImage):
 
         system = settings.get('wcs_coords', None)
         format = settings.get('wcs_display', 'sexagesimal')
-        ra_lbl, dec_lbl = six.unichr(945), six.unichr(948)
+        ra_lbl, dec_lbl = chr(945), chr(948)
 
         # Calculate WCS coords, if available
         try:
@@ -706,7 +801,7 @@ class AstroImage(BaseImage):
                 if system == 'galactic':
                     ra_lbl, dec_lbl = "l", "b"
                 elif system == 'ecliptic':
-                    ra_lbl, dec_lbl = six.unichr(0x03BB), six.unichr(0x03B2)
+                    ra_lbl, dec_lbl = chr(0x03BB), chr(0x03B2)
                 elif system == 'helioprojective':
                     ra_txt = "%+5.3f" % (lon_deg * 3600)
                     dec_txt = "%+5.3f" % (lat_deg * 3600)

@@ -4,8 +4,6 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from ginga.util.six.moves import map
-
 import numpy as np
 import logging
 
@@ -170,7 +168,7 @@ class BaseImage(ViewerObjectBase):
         """Use this method to SHARE (not copy) the incoming array.
         """
         if astype:
-            data = data_np.astype(astype)
+            data = data_np.astype(astype, copy=False)
         else:
             data = data_np
         self._data = data
@@ -192,6 +190,7 @@ class BaseImage(ViewerObjectBase):
         self._data = np.zeros((1, 1))
 
     def _slice(self, view):
+        view = tuple(view)
         return self._get_data()[view]
 
     def get_slice(self, c):
@@ -220,17 +219,19 @@ class BaseImage(ViewerObjectBase):
         return [self.order.index(c) for c in cs]
 
     def _calc_order(self, order):
+        """Called to set the order of a multi-channel image.
+        The order should be determined by the loader, but this will
+        make a best guess if passed `order` is `None`.
+        """
         if order is not None and order != '':
             self.order = order.upper()
         else:
             shape = self.shape
             if len(shape) <= 2:
                 self.order = 'M'
-            elif self.dtype != np.uint8:
-                self.order = 'M'
             else:
                 depth = shape[-1]
-                # TODO; need something better here than a guess!
+                # TODO: need something better here than a guess!
                 if depth == 1:
                     self.order = 'M'
                 elif depth == 2:
@@ -275,7 +276,8 @@ class BaseImage(ViewerObjectBase):
         else:
             return (self.minval_noinf, self.maxval_noinf)
 
-    def get_header(self):
+    # kwargs is needed so subclasses can interoperate with optional keywords.
+    def get_header(self, **kwargs):
         return self.get('header', Header())
 
     def transfer(self, other, astype=None):
@@ -294,7 +296,7 @@ class BaseImage(ViewerObjectBase):
         view = np.s_[y1:y2:ystep, x1:x2:xstep]
         data = self._slice(view)
         if astype:
-            data = data.astype(astype)
+            data = data.astype(astype, copy=False)
         return data
 
     def cutout_adjust(self, x1, y1, x2, y2, xstep=1, ystep=1, astype=None):
@@ -363,7 +365,7 @@ class BaseImage(ViewerObjectBase):
         If `avoid_oob` is True (default) then the bounding box is clipped
         to avoid coordinates outside of the actual data.
         """
-        x1, y1, x2, y2 = map(int, shape_obj.get_llur())
+        x1, y1, x2, y2 = [int(np.round(n)) for n in shape_obj.get_llur()]
 
         if avoid_oob:
             # avoid out of bounds indexes
@@ -437,21 +439,19 @@ class BaseImage(ViewerObjectBase):
         new_ht = int(round(scale_y * (y2 - y1 + 1)))
 
         return self.get_scaled_cutout_wdht(x1, y1, x2, y2, new_wd, new_ht,
-                                           # TODO:
-                                           # this causes a problem for the
-                                           # current Glue plugin--update that
-                                           #method=method
-                                           )
+                                           method=method)
 
     def get_scaled_cutout(self, x1, y1, x2, y2, scale_x, scale_y,
                           method='basic', logger=None):
-        if method == 'basic':
+        if method in ('basic', 'view'):
             return self.get_scaled_cutout_basic(x1, y1, x2, y2,
-                                                scale_x, scale_y)
+                                                scale_x, scale_y,
+                                                method=method)
 
         data = self._get_data()
         newdata, (scale_x, scale_y) = trcalc.get_scaled_cutout_basic(
-            data, x1, y1, x2, y2, scale_x, scale_y, interpolation=method)
+            data, x1, y1, x2, y2, scale_x, scale_y, interpolation=method,
+            logger=logger)
 
         res = Bunch.Bunch(data=newdata, scale_x=scale_x, scale_y=scale_y)
         return res
@@ -459,7 +459,7 @@ class BaseImage(ViewerObjectBase):
     def get_scaled_cutout2(self, p1, p2, scales,
                            method='basic', logger=None):
 
-        if method not in ('basic',) and len(scales) == 2:
+        if method not in ('basic', 'view') and len(scales) == 2:
             # for 2D images with alternate interpolation requirements
             return self.get_scaled_cutout(p1[0], p1[1], p2[0], p2[1],
                                           scales[0], scales[1],

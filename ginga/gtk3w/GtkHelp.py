@@ -7,6 +7,7 @@
 import sys
 import os.path
 import math
+import random
 
 from ginga.misc import Bunch, Callback
 from ginga.fonts import font_asst
@@ -21,6 +22,10 @@ from gi.repository import GObject  # noqa
 from gi.repository import Pango  # noqa
 
 ginga.toolkit.use('gtk3')
+
+
+DND_TARGET_TYPE_TEXT = 0
+DND_TARGET_TYPE_URIS = 1
 
 
 class WidgetMask(object):
@@ -161,7 +166,10 @@ class VScale(WidgetMask, Gtk.VScale):
         super(VScale, self).set_value(newval)
 
 
-class ComboBoxMixin(object):
+class ComboBox(WidgetMask, Gtk.ComboBox):
+    def __init__(self, *args, **kwdargs):
+        WidgetMask.__init__(self)
+        Gtk.ComboBox.__init__(self, *args, **kwdargs)
 
     def set_active(self, newval):
         oldval = self.get_active()
@@ -203,18 +211,6 @@ class ComboBoxMixin(object):
             if model[i][0] == text:
                 self.set_active(i)
                 return
-
-
-class ComboBox(WidgetMask, Gtk.ComboBox, ComboBoxMixin):
-    def __init__(self, *args, **kwdargs):
-        WidgetMask.__init__(self)
-        Gtk.ComboBox.__init__(self, *args, **kwdargs)
-
-
-## class ComboBoxEntry(WidgetMask, Gtk.ComboBoxEntry, ComboBoxMixin):
-##     def __init__(self, *args, **kwdargs):
-##         WidgetMask.__init__(self)
-##         Gtk.ComboBoxEntry.__init__(self, *args, **kwdargs)
 
 
 class Notebook(WidgetMask, Gtk.Notebook):
@@ -330,7 +326,7 @@ class MDIWidget(Gtk.Layout):
     """
     Multiple Document Interface type widget for Gtk.
 
-    NOTE: *** This is a work in progress! ***
+    NOTE: *** This is somewhat of a work in progress! ***
     """
     def __init__(self):
         Gtk.Layout.__init__(self)
@@ -340,12 +336,9 @@ class MDIWidget(Gtk.Layout):
         self.selected_child = None
         self.kbdmouse_mask = 0
         self.cascade_offset = 50
-        self.minimized_width = 50
+        self.minimized_width = 150
         self.delta_px = 50
 
-        self.connect("motion_notify_event", self.motion_notify_event)
-        self.connect("button_press_event", self.button_press_event)
-        self.connect("button_release_event", self.button_release_event)
         mask = self.get_events()
         self.set_events(mask |
                         Gdk.EventMask.ENTER_NOTIFY_MASK |
@@ -360,6 +353,10 @@ class MDIWidget(Gtk.Layout):
                         Gdk.EventMask.POINTER_MOTION_HINT_MASK |
                         Gdk.EventMask.SCROLL_MASK)
 
+        self.connect("motion_notify_event", self.motion_notify_event)
+        self.connect("button_press_event", self.button_press_event)
+        self.connect("button_release_event", self.button_release_event)
+
         self.modify_bg(Gtk.StateType.NORMAL, Gdk.color_parse("gray50"))
 
     def append_page(self, widget, label):
@@ -372,11 +369,24 @@ class MDIWidget(Gtk.Layout):
         subwin.add_callback('maximize', lambda *args: self.maximize_page(subwin))
         subwin.add_callback('minimize', lambda *args: self.minimize_page(subwin))
 
-        self.put(subwin.frame, self.cascade_offset, self.cascade_offset)
+        # pick a random spot to place the window initially
+        rect = self.get_allocation()
+        wd, ht = rect.width, rect.height
+        x = random.randint(self.cascade_offset,
+                           max(self.cascade_offset + 10, wd // 2))
+        y = random.randint(self.cascade_offset,
+                           max(self.cascade_offset + 10, ht // 2))
 
-        self.update_subwin_position(subwin)
-        self.update_subwin_size(subwin)
+        self.put(subwin.frame, x, y)
 
+        # note: seem to need a slight delay to let the widget be mapped
+        # in order to accurately determine its position and size
+        #self.update_subwin_position(subwin)
+        #self.update_subwin_size(subwin)
+        GObject.timeout_add(1000, self.update_subwin_position, subwin)
+        GObject.timeout_add(1500, self.update_subwin_size, subwin)
+
+        self._update_area_size()
         return subwin
 
     def set_tab_reorderable(self, w, tf):
@@ -428,6 +438,7 @@ class MDIWidget(Gtk.Layout):
             frame = subwin.frame
             super(MDIWidget, self).remove(frame)
             widget.unparent()
+        self._update_area_size()
 
     def get_widget_position(self, widget):
         rect = widget.get_allocation()
@@ -531,6 +542,18 @@ class MDIWidget(Gtk.Layout):
             button |= 0x1 << (event.button - 1)
         return True
 
+    def _update_area_size(self):
+        rect = self.get_allocation()
+        mx_wd, mx_ht = rect.width, rect.height
+
+        for subwin in self.children:
+            rect = subwin.frame.get_allocation()
+            x, y, wd, ht = rect.x, rect.y, rect.width, rect.height
+
+            mx_wd, mx_ht = max(mx_wd, x + wd), max(mx_ht, y + ht)
+
+        self.set_size(mx_wd, mx_ht)
+
     def _resize(self, bnch, x_root, y_root):
         subwin = bnch.subwin
         updates = bnch.updates
@@ -568,6 +591,8 @@ class MDIWidget(Gtk.Layout):
             # this works better if it is not self.resize_page()
             subwin.frame.set_size_request(wd, ht)
 
+        self._update_area_size()
+
     def button_release_event(self, widget, event):
         x_root, y_root = event.x_root, event.y_root
         button = self.kbdmouse_mask
@@ -594,6 +619,8 @@ class MDIWidget(Gtk.Layout):
                 self.resize_page(subwin, subwin.width, subwin.height)
 
             self.selected_child = None
+
+        self._update_area_size()
         return True
 
     def motion_notify_event(self, widget, event):
@@ -619,6 +646,7 @@ class MDIWidget(Gtk.Layout):
             elif bnch.action == 'resize':
                 self._resize(bnch, x_root, y_root)
 
+        self._update_area_size()
         return True
 
     def tile_pages(self):
@@ -649,6 +677,8 @@ class MDIWidget(Gtk.Layout):
 
                     self.raise_widget(subwin)
 
+        self._update_area_size()
+
     def cascade_pages(self):
         x, y = 0, 0
         for subwin in self.children:
@@ -656,6 +686,8 @@ class MDIWidget(Gtk.Layout):
             self.raise_widget(subwin)
             x += self.cascade_offset
             y += self.cascade_offset
+
+        self._update_area_size()
 
     def use_tabs(self, tf):
         pass
@@ -676,6 +708,8 @@ class MDIWidget(Gtk.Layout):
         self.resize_page(subwin, wd, ht)
         self.move_page(subwin, 0, 0)
 
+        self._update_area_size()
+
     def minimize_page(self, subwin):
         rect = self.get_allocation()
         height = rect.height
@@ -690,15 +724,20 @@ class MDIWidget(Gtk.Layout):
         self.move_page(subwin, x, height - ht)
         #self.lower_widget(subwin)
 
+        self._update_area_size()
+
     def close_page(self, subwin):
-        pass
+        self._update_area_size()
 
 
 class FileSelection(object):
 
     def __init__(self, parent_w, action=Gtk.FileChooserAction.OPEN,
-                 title="Select a file"):
+                 title="Select a file", all_at_once=False):
+        # TODO: deprecate the functionality when all_at_once == False
+        # and make the default to be True
         self.parent = parent_w
+        self.all_at_once = all_at_once
         # Create a new file selection widget
         self.filew = Gtk.FileChooserDialog(title=title, action=action)
         self.filew.connect("destroy", self.close)
@@ -707,6 +746,7 @@ class FileSelection(object):
         else:
             self.filew.add_buttons(Gtk.STOCK_OPEN, 1, Gtk.STOCK_CANCEL, 0)
         self.filew.set_default_response(1)
+        self.filew.set_select_multiple(True)
         self.filew.connect("response", self.file_ok_sel)
 
         # Connect the cancel_button to destroy the widget
@@ -724,6 +764,8 @@ class FileSelection(object):
             self.filew.set_current_name(filename)
 
         self.filew.show()
+        # default size can be enormous
+        self.filew.resize(800, 600)
 
     # Get the selected filename
     def file_ok_sel(self, w, rsp):
@@ -731,8 +773,12 @@ class FileSelection(object):
         if rsp == 0:
             return
 
-        filepath = self.filew.get_filename()
-        self.cb(filepath)
+        paths = self.filew.get_filenames()
+        if self.all_at_once:
+            self.cb(paths)
+        else:
+            for path in paths:
+                self.cb(path)
 
     def close(self, widget):
         self.filew.hide()
@@ -928,11 +974,15 @@ def set_default_style():
     with open(gtk_css, 'rb') as css_f:
         css_data = css_f.read()
 
-    style_provider.load_from_data(css_data)
+    try:
+        style_provider.load_from_data(css_data)
 
-    Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(), style_provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-    )
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+    except Exception:
+        pass
 
 # END

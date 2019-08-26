@@ -59,12 +59,14 @@ class ImageViewBindings(object):
         self.cursor_map = {}
 
     def initialize_settings(self, settings):
-        settings.addSettings(
+        settings.add_settings(
             # You should rarely have to change these.
             btn_nobtn=0x0,
             btn_left=0x1,
             btn_middle=0x2,
             btn_right=0x4,
+            btn_back=0x8,
+            btn_forward=0x10,
 
             # define our cursors
             ## cur_pick = 'thinCrossCursor',
@@ -73,21 +75,27 @@ class ImageViewBindings(object):
             # Set up our standard modifiers
             mod_shift=['shift_l', 'shift_r'],
             mod_ctrl=['control_l', 'control_r'],
-            mod_meta=['meta_right'],
+            mod_win=['meta_right'],
 
             # Define our modes
-            dmod_draw=['space', None, None],
-            dmod_cmap=['y', None, None],
-            dmod_cuts=['s', None, None],
-            dmod_dist=['d', None, None],
-            dmod_contrast=['t', None, None],
-            dmod_rotate=['r', None, None],
-            dmod_pan=['q', None, 'pan'],
-            dmod_freepan=['w', None, 'pan'],
-            dmod_camera=[None, None, 'pan'],
-            dmod_naxis=[None, None, None],
+            # Mode 'meta' is special: it is an intermediate mode that
+            # is used primarily to launch other modes
+            # If the mode initiation character is preceeded by a double
+            # underscore, then the mode must be initiated from the "meta"
+            # mode.
+            dmod_meta=['space', None, None],
+            dmod_draw=['__b', None, None],
+            dmod_cmap=['__y', None, None],
+            dmod_cuts=['__s', None, None],
+            dmod_dist=['__d', None, None],
+            dmod_contrast=['__t', None, None],
+            dmod_rotate=['__r', None, None],
+            dmod_pan=['__q', None, 'pan'],
+            dmod_freepan=['__w', None, 'pan'],
+            dmod_camera=['__c', None, 'pan'],
+            dmod_naxis=['__n', None, None],
 
-            default_mode_type='oneshot',
+            default_mode_type='locked',
             default_lock_mode_type='softlock',
 
             # KEYBOARD
@@ -141,6 +149,7 @@ class ImageViewBindings(object):
             kp_flip_y=[']', '}', 'rotate+]', 'rotate+}'],
             kp_swap_xy=['backslash', '|', 'rotate+backslash', 'rotate+|'],
             kp_rotate_reset=['R', 'rotate+R'],
+            kp_save_profile=['S'],
             kp_rotate_inc90=['.', 'rotate+.'],
             kp_rotate_dec90=[',', 'rotate+,'],
             kp_orient_lh=['o', 'rotate+o'],
@@ -149,8 +158,8 @@ class ImageViewBindings(object):
             kp_poly_del=['z', 'draw+z'],
             kp_edit_del=['draw+x'],
             kp_reset=['escape'],
-            kp_lock=['L'],
-            kp_softlock=['l'],
+            kp_lock=['L', 'meta+L'],
+            kp_softlock=['l', 'meta+l'],
             kp_camera_save=['camera+s'],
             kp_camera_reset=['camera+r'],
             kp_camera_toggle3d=['camera+3'],
@@ -164,10 +173,10 @@ class ImageViewBindings(object):
             sc_pan=['ctrl+scroll'],
             sc_pan_fine=['pan+shift+scroll'],
             sc_pan_coarse=['pan+ctrl+scroll'],
-            sc_zoom=['scroll'],
+            sc_zoom=['scroll', 'freepan+scroll'],
             sc_zoom_fine=[],
             sc_zoom_coarse=[],
-            sc_zoom_origin=['shift+scroll', 'freepan+scroll'],
+            sc_zoom_origin=['shift+scroll', 'freepan+shift+scroll'],
             sc_cuts_fine=['cuts+ctrl+scroll'],
             sc_cuts_coarse=['cuts+scroll'],
             sc_cuts_alg=[],
@@ -195,7 +204,7 @@ class ImageViewBindings(object):
             ms_none=['nobtn'],
             ms_cursor=['left'],
             ms_wheel=[],
-            ms_draw=['draw+left', 'meta+left', 'right'],
+            ms_draw=['draw+left', 'win+left', 'right'],
 
             ms_rotate=['rotate+left'],
             ms_rotate_reset=['rotate+right'],
@@ -221,6 +230,9 @@ class ImageViewBindings(object):
             pi_zoom=['pinch'],
             pi_zoom_origin=['shift+pinch'],
             pa_pan=['pan'],
+            pa_zoom=['freepan+pan'],
+            pa_zoom_origin=['freepan+shift+pan'],
+            pa_naxis=['naxis+pan'],
 
             pinch_actions=['zoom'],
             pinch_zoom_acceleration=1.0,
@@ -301,8 +313,10 @@ class ImageViewBindings(object):
             d = self.settings.get_dict()
 
         # First scan settings for buttons and modes
+        bindmap.clear_button_map()
         bindmap.clear_modifier_map()
         bindmap.clear_mode_map()
+        bindmap.clear_event_map()
 
         mode_type = self.settings.get('default_mode_type', 'oneshot')
         bindmap.set_default_mode_type(mode_type)
@@ -331,11 +345,15 @@ class ImageViewBindings(object):
                 if curname is not None:
                     self.cursor_map[mode_name] = curname
 
+        self.merge_actions(viewer, bindmap, self, d.items())
+
+    def merge_actions(self, viewer, bindmap, obj, tups):
+
         modes_set = bindmap.get_modes()
         modifiers_set = bindmap.get_modifiers()
 
         # Add events
-        for name, value in d.items():
+        for name, value in tups:
             if len(name) <= 3:
                 continue
 
@@ -360,7 +378,7 @@ class ImageViewBindings(object):
 
             # Register for this symbolic event if we have a handler for it
             try:
-                cb_method = getattr(self, name)
+                cb_method = getattr(obj, name)
 
             except AttributeError:
                 # Do we need a warning here?
@@ -475,7 +493,7 @@ class ImageViewBindings(object):
         if ptype == 1:
             # This is a "free pan", similar to dragging the "lens"
             # over the canvas.
-            dat_wd, dat_ht = viewer.get_data_size()
+            xy_mn, xy_mx = viewer.get_limits()
             win_wd, win_ht = viewer.get_window_size()
 
             if (win_x >= win_wd):
@@ -497,7 +515,8 @@ class ImageViewBindings(object):
                 panx = 1.0 - panx
                 pany = 1.0 - pany
 
-            data_x, data_y = panx * dat_wd, pany * dat_ht
+            data_x = (xy_mn[0] + xy_mx[0]) * panx
+            data_y = (xy_mn[1] + xy_mx[1]) * pany
             return data_x, data_y
 
         elif ptype == 2:
@@ -740,8 +759,9 @@ class ImageViewBindings(object):
         self.logger.debug("rotating color map by %d steps" % (num))
 
         rgbmap = viewer.get_rgbmap()
-        rgbmap.restore_cmap(callback=False)
-        rgbmap.rotate_cmap(num)
+        with rgbmap.suppress_changed:
+            rgbmap.restore_cmap(callback=False)
+            rgbmap.rotate_cmap(num)
 
     def _cutlow_pct(self, viewer, pct, msg=True):
         msg = self.settings.get('msg_cuts', msg)
@@ -917,7 +937,7 @@ class ImageViewBindings(object):
                 if idx < 0:
                     idx = len(cmapnames) - 1
             cmapname = cmapnames[idx]
-            rgbmap.set_cmap(cmap.get_cmap(cmapname))
+            viewer.set_color_map(cmapname)
             if msg:
                 viewer.onscreen_message("Color map: %s" % (cmapname),
                                         delay=1.0)
@@ -925,10 +945,9 @@ class ImageViewBindings(object):
     def _reset_cmap(self, viewer, msg):
         if self.cancmap:
             msg = self.settings.get('msg_cmap', msg)
-            rgbmap = viewer.get_rgbmap()
             # default
             cmapname = 'gray'
-            rgbmap.set_cmap(cmap.get_cmap(cmapname))
+            viewer.set_color_map(cmapname)
             if msg:
                 viewer.onscreen_message("Color map: %s" % (cmapname),
                                         delay=1.0)
@@ -957,7 +976,7 @@ class ImageViewBindings(object):
                 if idx < 0:
                     idx = len(imapnames) - 1
             imapname = imapnames[idx]
-            rgbmap.set_imap(imap.get_imap(imapname))
+            viewer.set_intensity_map(imapname)
             if msg:
                 viewer.onscreen_message("Intensity map: %s" % (imapname),
                                         delay=1.0)
@@ -965,10 +984,9 @@ class ImageViewBindings(object):
     def _reset_imap(self, viewer, msg):
         if self.cancmap:
             msg = self.settings.get('msg_imap', msg)
-            rgbmap = viewer.get_rgbmap()
             # default
             imapname = 'ramp'
-            rgbmap.set_imap(imap.get_imap(imapname))
+            viewer.set_intensity_map(imapname)
             if msg:
                 viewer.onscreen_message("Intensity map: %s" % (imapname),
                                         delay=1.0)
@@ -1026,6 +1044,33 @@ class ImageViewBindings(object):
         if msg:
             viewer.onscreen_message("Orient: rot=%.2f flipx=%s" % (
                 degn, str(xflip)), delay=1.0)
+
+    def _nav_naxis(self, viewer, axis, direction, msg=True):
+        """Interactively change the slice of the image in a data cube
+        by scrolling.
+        """
+        image = viewer.get_image()
+        if image is None:
+            return
+        mddata = image.get_mddata()
+        if len(mddata.shape) < (axis + 1):
+            # image dimensions < 3D
+            return
+
+        naxispath = list(image.naxispath)
+        axis_lim = mddata.shape[axis]
+        m = axis - 2
+
+        idx = naxispath[m]
+        if direction == 'down':
+            idx = (idx + 1) % axis_lim
+        else:
+            idx = idx - 1
+            if idx < 0:
+                idx = axis_lim - 1
+
+        naxispath[m] = idx
+        image.set_naxispath(naxispath)
 
     def to_default_mode(self, viewer):
         self.reset(viewer)
@@ -1202,7 +1247,7 @@ class ImageViewBindings(object):
             msg = self.settings.get('msg_zoom', msg)
             keylist = self.settings.get('kp_zoom')
             try:
-                zoomval = (keylist.index(event.key) + 1)
+                zoomval = (keylist.index(event.key))
             except IndexError:
                 return False
             viewer.zoom_to(zoomval)
@@ -1216,7 +1261,7 @@ class ImageViewBindings(object):
             msg = self.settings.get('msg_zoom', msg)
             keylist = self.settings.get('kp_zoom_inv')
             try:
-                zoomval = - (keylist.index(event.key) + 1)
+                zoomval = - (keylist.index(event.key))
             except IndexError:
                 return False
             viewer.zoom_to(zoomval)
@@ -1372,6 +1417,11 @@ class ImageViewBindings(object):
                 viewer.onscreen_message("Swap XY=%s" % swapxy, delay=1.0)
         return True
 
+    def kp_transform_reset(self, viewer, event, data_x, data_y):
+        if self.canflip:
+            viewer.transform(False, False, False)
+        return True
+
     def kp_dist(self, viewer, event, data_x, data_y, msg=True):
         self._cycle_dist(viewer, msg)
         return True
@@ -1431,8 +1481,6 @@ class ImageViewBindings(object):
     def kp_rotate_reset(self, viewer, event, data_x, data_y):
         if self.canrotate:
             viewer.rotate(0.0)
-            # also reset all transforms
-            viewer.transform(False, False, False)
         return True
 
     def kp_rotate_inc90(self, viewer, event, data_x, data_y, msg=True):
@@ -1481,6 +1529,12 @@ class ImageViewBindings(object):
 
     def kp_softlock(self, viewer, event, data_x, data_y):
         self._toggle_lock(viewer, 'softlock')
+        return True
+
+    def kp_save_profile(self, viewer, event, data_x, data_y, msg=True):
+        viewer.checkpoint_profile()
+        if msg:
+            viewer.onscreen_message("Profile saved", delay=0.5)
         return True
 
     #####  MOUSE ACTION CALLBACKS #####
@@ -1565,7 +1619,9 @@ class ImageViewBindings(object):
             return True
 
         with viewer.suppress_redraw:
-            viewer.panset_xy(data_x, data_y)
+            # TODO: think about whether it is the correct behavior to
+            # set the pan position when zooming out
+            #viewer.panset_xy(data_x, data_y)
 
             if self.settings.get('scroll_zoom_direct_scale', True):
                 zoom_accel = self.settings.get('scroll_zoom_acceleration', 1.0)
@@ -1966,48 +2022,33 @@ class ImageViewBindings(object):
         return self.sc_pan(viewer, event, msg=msg)
 
     def sc_naxis(self, viewer, event, msg=True):
-
+        """Interactively change the slice of the image in a data cube
+        by scrolling.
+        """
         # TODO: be able to pick axis
         axis = 2
         direction = self.get_direction(event.direction)
 
-        image = viewer.get_image()
-        if image is None:
-            return
-        mddata = image.get_mddata()
-        if len(mddata.shape) < (axis + 1):
-            # image dimensions < 3D
-            return
-
-        naxispath = list(image.naxispath)
-        axis_lim = mddata.shape[axis]
-        m = axis - 2
-
-        idx = naxispath[m]
-        if direction == 'down':
-            idx = (idx + 1) % axis_lim
-        else:
-            idx = idx - 1
-            if idx < 0:
-                idx = axis_lim - 1
-
-        naxispath[m] = idx
-        image.set_naxispath(naxispath)
+        return self._nav_naxis(viewer, axis, direction, msg=msg)
 
     def sc_dist(self, viewer, event, msg=True):
-
+        """Interactively change the color distribution algorithm
+        by scrolling.
+        """
         direction = self.get_direction(event.direction)
         self._cycle_dist(viewer, msg, direction=direction)
         return True
 
     def sc_cmap(self, viewer, event, msg=True):
-
+        """Interactively change the color map by scrolling.
+        """
         direction = self.get_direction(event.direction)
         self._cycle_cmap(viewer, msg, direction=direction)
         return True
 
     def sc_imap(self, viewer, event, msg=True):
-
+        """Interactively change the intensity map by scrolling.
+        """
         direction = self.get_direction(event.direction)
         self._cycle_imap(viewer, msg, direction=direction)
         return True
@@ -2158,16 +2199,86 @@ class ImageViewBindings(object):
         return self._pinch_zoom_rotate(viewer, state, rot_deg, scale, msg=msg)
 
     def pi_zoom(self, viewer, event, msg=True):
+        """Zoom and/or rotate the viewer by a pinch gesture.
+        (the back end must support gestures)
+        """
         return self._pinch_zoom_rotate(viewer, event.state, event.rot_deg,
                                        event.scale, msg=msg)
 
     def pi_zoom_origin(self, viewer, event, msg=True):
+        """Like pi_zoom(), but pans the image as well to keep the
+        coordinate under the cursor in that same position relative
+        to the window.
+        """
         origin = (event.data_x, event.data_y)
         return self._pinch_zoom_rotate(viewer, event.state, event.rot_deg,
                                        event.scale, msg=msg, origin=origin)
 
     def pa_pan(self, viewer, event, msg=True):
-        return self.gs_pan(viewer, event.state, event.delta_x, event.delta_y, msg=msg)
+        """Interactively pan the image by a pan gesture.
+        (the back end must support gestures)
+        """
+        return self.gs_pan(viewer, event.state,
+                           event.delta_x, event.delta_y, msg=msg)
+
+    def _pa_synth_scroll_event(self, event):
+
+        dx, dy = float(event.delta_x), float(event.delta_y)
+        amount = math.sqrt(dx ** 2.0 + dy ** 2.0)
+        if dx == 0.0:
+            if dy > 0:
+                direction = 0.0
+            else:
+                direction = 180.0
+        else:
+            direction = math.atan(dy / dx)
+
+        self.logger.debug("scroll amount=%f direction=%f" % (
+            amount, direction))
+
+        # synthesize a scroll event
+        event = ScrollEvent(button=event.button, state=event.state,
+                            mode=event.mode, modifiers=event.modifiers,
+                            direction=direction, amount=amount,
+                            data_x=event.data_x, data_y=event.data_y,
+                            viewer=event.viewer)
+        return event
+
+    def pa_zoom(self, viewer, event, msg=True):
+        """Interactively zoom the image by a pan gesture.
+        (the back end must support gestures)
+        """
+        event = self._pa_synth_scroll_event(event)
+        if event.state != 'move':
+            return False
+        self._sc_zoom(viewer, event, msg=msg, origin=None)
+        return True
+
+    def pa_zoom_origin(self, viewer, event, msg=True):
+        """Like pa_zoom(), but pans the image as well to keep the
+        coordinate under the cursor in that same position relative
+        to the window.
+        """
+        event = self._pa_synth_scroll_event(event)
+        if event.state != 'move':
+            return False
+        origin = (event.data_x, event.data_y)
+        self._sc_zoom(viewer, event, msg=msg, origin=origin)
+        return True
+
+    def pa_naxis(self, viewer, event, msg=True):
+        """Interactively change the slice of the image in a data cube
+        by pan gesture.
+        """
+        event = self._pa_synth_scroll_event(event)
+        if event.state != 'move':
+            return False
+
+        # TODO: be able to pick axis
+        axis = 2
+        direction = self.get_direction(event.direction)
+
+        return self._nav_naxis(viewer, axis, direction, msg=msg)
 
     ##### CAMERA MOTION CALLBACKS #####
 
@@ -2397,9 +2508,9 @@ class BindingMapper(Callback.Callbacks):
             for keyname in ('control_l', 'control_r'):
                 self.add_modifier(keyname, 'ctrl')
             for keyname in ('meta_right',):
-                self.add_modifier(keyname, 'meta')
+                self.add_modifier(keyname, 'win')
         else:
-            self.modifier_map = mode_map
+            self.modifier_map = modifier_map
 
         # Set up mode mapping
         if mode_map is None:
@@ -2408,6 +2519,7 @@ class BindingMapper(Callback.Callbacks):
             self.mode_map = mode_map
 
         self._empty_set = frozenset([])
+        self.mode_tbl = dict()
 
         # For callbacks
         for name in ('mode-set', ):
@@ -2453,8 +2565,12 @@ class BindingMapper(Callback.Callbacks):
 
         bnch = Bunch.Bunch(name=mode_name, type=mode_type, msg=msg)
         if keyname is not None:
-            # No key to launch this mode
-            self.mode_map[keyname] = bnch
+            # Key to launch this mode
+            if keyname[0:2] == '__':
+                keyname = keyname[2]
+                self.mode_tbl[keyname] = bnch
+            else:
+                self.mode_map[keyname] = bnch
         self.mode_map['mode_%s' % mode_name] = bnch
 
     def set_mode(self, name, mode_type=None):
@@ -2489,7 +2605,7 @@ class BindingMapper(Callback.Callbacks):
         self._kbdmode = None
         self._kbdmode_type = 'held'
         self._delayed_reset = False
-        self.logger.info("set keyboard mode reset")
+        self.logger.debug("set keyboard mode reset")
         # clear onscreen message, if any
         if (bnch is not None) and (bnch.msg is not None):
             viewer.onscreen_message(None)
@@ -2506,6 +2622,9 @@ class BindingMapper(Callback.Callbacks):
 
     def get_buttons(self):
         return set([alias for keyname, alias in self.btnmap.items()])
+
+    def get_button(self, btncode):
+        return self.btnmap.get(btncode, None)
 
     def clear_event_map(self):
         self.eventmap = {}
@@ -2535,21 +2654,23 @@ class BindingMapper(Callback.Callbacks):
         for pfx in self.event_names:
             # TODO: add moded versions of callbacks?
             viewer.enable_callback('%s-none' % (pfx))
-        # initial callback to enable a mode
-        viewer.add_callback('keydown-none', self.mode_key_down)
 
-    def mode_key_down(self, viewer, event, data_x, data_y):
+    def mode_key_down(self, viewer, keyname):
         """This method is called when a key is pressed and was not handled
         by some other handler with precedence, such as a subcanvas.
         """
-        keyname = event.key
         # Is this a mode key?
         if keyname not in self.mode_map:
-            # No
-            return False
+            if (keyname not in self.mode_tbl) or (self._kbdmode != 'meta'):
+                # No
+                return False
+            bnch = self.mode_tbl[keyname]
+        else:
+            bnch = self.mode_map[keyname]
 
-        bnch = self.mode_map[keyname]
         mode_name = bnch.name
+        self.logger.debug("cur mode='%s' mode pressed='%s'" % (
+            self._kbdmode, mode_name))
 
         if mode_name == self._kbdmode:
             # <== same key was pressed that started the mode we're in
@@ -2564,12 +2685,13 @@ class BindingMapper(Callback.Callbacks):
             self._delayed_reset = False
             return True
 
-        if (self._kbdmode is None) or (self._kbdmode_type != 'locked'):
+        if ((self._kbdmode in (None, 'meta')) or
+            (self._kbdmode_type != 'locked') or (mode_name == 'meta')):
             if self._kbdmode is not None:
                 self.reset_mode(viewer)
 
             # activate this mode
-            if self._kbdmode is None:
+            if self._kbdmode in (None, 'meta'):
                 mode_type = bnch.type
                 if mode_type is None:
                     mode_type = self._kbdmode_type_default
@@ -2577,26 +2699,15 @@ class BindingMapper(Callback.Callbacks):
                 if bnch.msg is not None:
                     viewer.onscreen_message(bnch.msg)
 
-                # TODO: these callbacks really should have been
-                # enabled and registered at an earlier time, but
-                # add_mode() does not take a viewer parameter
-                cb_name = 'keydown-%s' % (mode_name)
-                if not viewer.has_callback(cb_name):
-                    viewer.set_callback(cb_name, self.mode_key_down)
-                cb_name = 'keyup-%s' % (mode_name)
-                if not viewer.has_callback(cb_name):
-                    viewer.set_callback(cb_name, self.mode_key_up)
-
                 return True
 
         return False
 
-    def mode_key_up(self, viewer, event, data_x, data_y):
+    def mode_key_up(self, viewer, keyname):
         """This method is called when a key is pressed in a mode and was
         not handled by some other handler with precedence, such as a
         subcanvas.
         """
-        keyname = event.key
         # Is this a mode key?
         if keyname not in self.mode_map:
             # <== no
@@ -2623,13 +2734,13 @@ class BindingMapper(Callback.Callbacks):
             # fixes a problem with not receiving key release events when the
             # window loses focus
             self._modifiers = frozenset([])
-        return True
+        return False
 
     def window_enter(self, viewer):
-        return True
+        return False
 
     def window_leave(self, viewer):
-        return True
+        return False
 
     def window_key_press(self, viewer, keyname):
         self.logger.debug("keyname=%s" % (keyname))
@@ -2637,6 +2748,9 @@ class BindingMapper(Callback.Callbacks):
         if keyname in self.modifier_map:
             bnch = self.modifier_map[keyname]
             self._modifiers = self._modifiers.union(set([bnch.name]))
+            return True
+
+        if self.mode_key_down(viewer, keyname):
             return True
 
         trigger = 'kp_' + keyname
@@ -2664,7 +2778,7 @@ class BindingMapper(Callback.Callbacks):
                     cbname = 'keydown-%s' % (emap.name)
 
                 except KeyError:
-                    cbname = 'keydown-%s' % str(self._kbdmode).lower()
+                    cbname = 'key-down-%s' % str(self._kbdmode).lower()
 
         self.logger.debug("idx=%s" % (str(idx)))
         last_x, last_y = viewer.get_last_data_xy()
@@ -2681,6 +2795,9 @@ class BindingMapper(Callback.Callbacks):
         if keyname in self.modifier_map:
             bnch = self.modifier_map[keyname]
             self._modifiers = self._modifiers.difference(set([bnch.name]))
+            return True
+
+        if self.mode_key_up(viewer, keyname):
             return True
 
         trigger = 'kp_' + keyname
@@ -2702,7 +2819,7 @@ class BindingMapper(Callback.Callbacks):
                     cbname = 'keyup-%s' % (emap.name)
 
                 except KeyError:
-                    cbname = 'keyup-%s' % str(self._kbdmode).lower()
+                    cbname = 'key-up-%s' % str(self._kbdmode).lower()
 
         last_x, last_y = viewer.get_last_data_xy()
 
@@ -2716,7 +2833,10 @@ class BindingMapper(Callback.Callbacks):
         self.logger.debug("x,y=%d,%d btncode=%s" % (data_x, data_y,
                                                     hex(btncode)))
         self._button |= btncode
-        button = self.btnmap[btncode]
+        button = self.get_button(btncode)
+        if button is None:
+            self.logger.error("unrecognized button code (%x)" % (btncode))
+            return False
         trigger = 'ms_' + button
         try:
             idx = (self._kbdmode, self._modifiers, trigger)
@@ -2745,7 +2865,10 @@ class BindingMapper(Callback.Callbacks):
 
     def window_motion(self, viewer, btncode, data_x, data_y):
 
-        button = self.btnmap[btncode]
+        button = self.get_button(btncode)
+        if button is None:
+            self.logger.error("unrecognized button code (%x)" % (btncode))
+            return False
         trigger = 'ms_' + button
         try:
             idx = (self._kbdmode, self._modifiers, trigger)
@@ -2775,7 +2898,10 @@ class BindingMapper(Callback.Callbacks):
         self.logger.debug("x,y=%d,%d button=%s" % (data_x, data_y,
                                                    hex(btncode)))
         self._button &= ~btncode
-        button = self.btnmap[btncode]
+        button = self.get_button(btncode)
+        if button is None:
+            self.logger.error("unrecognized button code (%x)" % (btncode))
+            return False
         trigger = 'ms_' + button
         try:
             idx = (self._kbdmode, self._modifiers, trigger)
@@ -2826,7 +2952,10 @@ class BindingMapper(Callback.Callbacks):
 
     def window_pinch(self, viewer, state, rot_deg, scale):
         btncode = 0
-        button = self.btnmap[btncode]
+        button = self.get_button(btncode)
+        if button is None:
+            self.logger.error("unrecognized button code (%x)" % (btncode))
+            return False
         trigger = 'pi_pinch'
         try:
             idx = (self._kbdmode, self._modifiers, trigger)
@@ -2856,7 +2985,10 @@ class BindingMapper(Callback.Callbacks):
 
     def window_pan(self, viewer, state, delta_x, delta_y):
         btncode = 0
-        button = self.btnmap[btncode]
+        button = self.get_button(btncode)
+        if button is None:
+            self.logger.error("unrecognized button code (%x)" % (btncode))
+            return False
         trigger = 'pa_pan'
         try:
             idx = (self._kbdmode, self._modifiers, trigger)

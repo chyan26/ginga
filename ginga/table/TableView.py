@@ -4,9 +4,6 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from ginga.util.six import itervalues
-from ginga.util.six.moves import zip
-
 import logging
 from collections import OrderedDict
 
@@ -48,8 +45,8 @@ class TableViewBase(Callback.Callbacks):
         # for debugging
         self.name = str(self)
 
-        self.settings.addDefaults(color_alternate_rows=True,
-                                  max_rows_for_col_resize=5000)
+        self.settings.add_defaults(color_alternate_rows=True,
+                                   max_rows_for_col_resize=5000)
 
         # For callbacks
         for name in ('table-set', 'configure', ):
@@ -78,6 +75,10 @@ class TableViewBase(Callback.Callbacks):
         return self.logger
 
     def set_table(self, table):
+        if not isinstance(table, AstroTable.AstroTable):
+            raise ValueError("Wrong type of object to load: %s" % (
+                str(type(table))))
+
         self._table = table
 
         self.make_callback('table-set', table)
@@ -133,7 +134,7 @@ class TableViewGw(TableViewBase):
 
         # Table header with units
         columns = [('Row', '_DISPLAY_ROW')]
-        for c in itervalues(a_tab.columns):
+        for c in a_tab.columns.values():
             col_str = '{0:^s}\n{1:^s}'.format(c.name, str(c.unit))
             columns.append((col_str, c.name))
 

@@ -21,6 +21,10 @@ the button in the UI labeled "Full Image".
 If a new image is selected for the channel, the histogram plot will be
 recalculated based on the current parameters with the new data.
 
+Unless disabled in the settings file for the histogram plugin, a line of
+simple statistics for the box is calculated and shown in a line below the
+plot.
+
 **UI Controls**
 
 Three radio buttons at the bottom of the UI are used to control the
@@ -74,18 +78,25 @@ class Histogram(GingaPlugin.LocalPlugin):
         self.histtag = None
         # If True, limits X axis to lo/hi cut levels
         self.xlimbycuts = True
+        self._split_sizes = [400, 500]
 
         # get Histogram preferences
         prefs = self.fv.get_preferences()
         self.settings = prefs.create_category('plugin_Histogram')
         self.settings.add_defaults(draw_then_move=True, num_bins=2048,
-                                   hist_color='aquamarine')
+                                   hist_color='aquamarine', show_stats=True,
+                                   maxdigits=7)
         self.settings.load(onError='silent')
 
         # Set up histogram control parameters
         self.histcolor = self.settings.get('hist_color', 'aquamarine')
         self.numbins = self.settings.get('num_bins', 2048)
         self.autocuts = AutoCuts.Histogram(self.logger)
+
+        # for formatting statistics line
+        self.show_stats = self.settings.get('show_stats', True)
+        maxdigits = self.settings.get('maxdigits', 7)
+        self.fmt_cell = '{:< %d.%dg}' % (maxdigits - 1, maxdigits // 2)
 
         self.dc = self.fv.get_draw_classes()
 
@@ -122,6 +133,7 @@ class Histogram(GingaPlugin.LocalPlugin):
         box.set_spacing(2)
 
         paned = Widgets.Splitter(orientation=orientation)
+        self.w.splitter = paned
 
         self.plot = plots.Plot(logger=self.logger,
                                width=400, height=400)
@@ -130,6 +142,13 @@ class Histogram(GingaPlugin.LocalPlugin):
         w = Plot.PlotWidget(self.plot)
         w.resize(400, 400)
         paned.add_widget(Widgets.hadjust(w, orientation))
+
+        vbox = Widgets.VBox()
+        vbox.set_border_width(2)
+
+        # for statistics line
+        self.w.stats1 = Widgets.Label('')
+        vbox.add_widget(self.w.stats1)
 
         captions = (('Cut Low:', 'label', 'Cut Low', 'entry'),
                     ('Cut High:', 'label', 'Cut High', 'entry',
@@ -168,11 +187,11 @@ class Histogram(GingaPlugin.LocalPlugin):
         b.full_image.add_callback('activated', lambda w: self.full_image_cb())
 
         fr = Widgets.Frame("Histogram")
-        fr.set_widget(w)
+        vbox.add_widget(w)
+        fr.set_widget(vbox)
         box.add_widget(fr, stretch=0)
         paned.add_widget(sw)
-        # hack to set a reasonable starting position for the splitter
-        paned.set_sizes([400, 500])
+        paned.set_sizes(self._split_sizes)
 
         mode = self.canvas.get_draw_mode()
         hbox = Widgets.HBox()
@@ -256,6 +275,8 @@ class Histogram(GingaPlugin.LocalPlugin):
         self.fv.show_status("Draw a rectangle with the right mouse button")
 
     def stop(self):
+        self.gui_up = False
+        self._split_sizes = self.w.splitter.get_sizes()
         # remove the rect from the canvas
         ## try:
         ##     self.canvas.delete_object_by_tag(self.histtag)
@@ -269,7 +290,6 @@ class Histogram(GingaPlugin.LocalPlugin):
             p_canvas.delete_object_by_tag(self.layertag)
         except Exception:
             pass
-        self.gui_up = False
         self.fv.show_status("")
 
     def full_image_cb(self):
@@ -287,7 +307,7 @@ class Histogram(GingaPlugin.LocalPlugin):
                                            linestyle='dash'))
         self.draw_cb(canvas, tag)
 
-    def histogram(self, image, x1, y1, x2, y2, z=None, pct=1.0, numbins=2048):
+    def get_data(self, image, x1, y1, x2, y2, z=None):
         if z is not None:
             data = image.get_data()
             data = data[y1:y2, x1:x2, z]
@@ -295,6 +315,15 @@ class Histogram(GingaPlugin.LocalPlugin):
             tup = image.cutout_adjust(x1, y1, x2, y2)
             data = tup[0]
 
+        return data
+
+    def histogram(self, image, x1, y1, x2, y2, z=None, pct=1.0, numbins=2048):
+        self.logger.warning("This call will be deprecated soon. "
+                            "Use get_data() and histogram_data().")
+        data_np = self.get_data(image, x1, y1, x2, y2, z=z)
+        return self.histogram_data(data_np, pct=pct, numbins=numbins)
+
+    def histogram_data(self, data, pct=1.0, numbins=2048):
         return self.autocuts.calc_histogram(data, pct=pct, numbins=numbins)
 
     def redo(self):
@@ -311,20 +340,16 @@ class Histogram(GingaPlugin.LocalPlugin):
         self.plot.clear()
 
         numbins = self.numbins
-        ## pct = 1.0
-        ## i = int(numbins * (1.0 - pct))
-        ## j = int(numbins * pct)
 
         depth = image.get_depth()
         if depth != 3:
-            res = self.histogram(image, int(bbox.x1), int(bbox.y1),
-                                 int(bbox.x2), int(bbox.y2),
-                                 pct=1.0, numbins=numbins)
+            data_np = self.get_data(image, int(bbox.x1), int(bbox.y1),
+                                    int(bbox.x2), int(bbox.y2))
+            res = self.histogram_data(data_np, pct=1.0, numbins=numbins)
             # used with 'steps-post' drawstyle, this x and y assignment
             # gives correct histogram-steps
             x = res.bins
             y = np.append(res.dist, res.dist[-1])
-            ## y, x = y[i:j+1], x[i:j+1]
             ymax = y.max()
             if self.plot.logy:
                 y = np.choose(y > 0, (.1, y))
@@ -335,14 +360,13 @@ class Histogram(GingaPlugin.LocalPlugin):
             colors = ('red', 'green', 'blue')
             ymax = 0
             for z in range(depth):
-                res = self.histogram(image, int(bbox.x1), int(bbox.y1),
-                                     int(bbox.x2), int(bbox.y2),
-                                     z=z, pct=1.0, numbins=numbins)
+                data_np = self.get_data(image, int(bbox.x1), int(bbox.y1),
+                                        int(bbox.x2), int(bbox.y2), z=z)
+                res = self.histogram_data(data_np, pct=1.0, numbins=numbins)
                 # used with 'steps-post' drawstyle, this x and y assignment
                 # gives correct histogram-steps
                 x = res.bins
                 y = np.append(res.dist, res.dist[-1])
-                ## y, x = y[i:j+1], x[i:j+1]
                 ymax = max(ymax, y.max())
                 if self.plot.logy:
                     y = np.choose(y > 0, (.1, y))
@@ -368,6 +392,21 @@ class Histogram(GingaPlugin.LocalPlugin):
         self.w.cut_low.set_text(str(loval))
         self.w.cut_high.set_text(str(hival))
         self.plot.fig.canvas.draw()
+
+        if self.show_stats:
+            # calculate statistics on finite elements in box
+            i = np.isfinite(data_np)
+            if np.any(i):
+                maxval = np.max(data_np[i])
+                minval = np.min(data_np[i])
+                meanval = np.mean(data_np[i])
+                rmsval = np.sqrt(np.mean(np.square(data_np[i])))
+                fmt_stat = "  Min: %s  Max: %s  Mean: %s  Rms: %s" % (
+                    self.fmt_cell, self.fmt_cell, self.fmt_cell, self.fmt_cell)
+                sum_text = fmt_stat.format(minval, maxval, meanval, rmsval)
+            else:
+                sum_text = "No finite data elements in cutout"
+            self.w.stats1.set_text(sum_text)
 
         self.fv.show_status("Click or drag left mouse button to move region")
         return True

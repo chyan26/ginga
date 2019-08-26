@@ -25,24 +25,21 @@ To avoid this, you must configure your session such that your Ginga data cache
 is sufficiently large (see "Customizing Ginga" in the manual).
 
 To create a new mosaic, set the FOV and drag files onto the display window.
+Images must have a working WCS.
 
 """
 import math
 import time
+from datetime import datetime
 import threading
 
 import numpy as np
 
 from ginga.AstroImage import AstroImage
-from ginga.util import wcs, iqcalc, dp
+from ginga.util import wcs, iqcalc, dp, io_fits
 from ginga import GingaPlugin
 from ginga.gw import Widgets
 
-try:
-    import astropy.io.fits as pyfits
-    have_pyfits = True
-except ImportError:
-    have_pyfits = False
 
 __all__ = ['Mosaic']
 
@@ -129,9 +126,14 @@ class Mosaic(GingaPlugin.LocalPlugin):
         self.w.update(b)
 
         fov_deg = self.settings.get('fov_deg', 1.0)
-        b.fov.set_text(str(fov_deg))
+        if np.isscalar(fov_deg):
+            fov_str = str(fov_deg)
+        else:
+            x_fov, y_fov = fov_deg
+            fov_str = str(x_fov) + ', ' + str(y_fov)
         #b.set_fov.set_length(8)
-        b.set_fov.set_text(str(fov_deg))
+        b.fov.set_text(fov_str)
+        b.set_fov.set_text(fov_str)
         b.set_fov.add_callback('activated', self.set_fov_cb)
         b.set_fov.set_tooltip("Set size of mosaic FOV (deg)")
         b.allow_expansion.set_tooltip("Allow image to expand the FOV")
@@ -254,8 +256,8 @@ class Mosaic(GingaPlugin.LocalPlugin):
         self.logger.debug("image0 rot=%f cdelt1=%f cdelt2=%f" % (
             rot_deg, cdelt1, cdelt2))
 
-        # TODO: handle differing pixel scale for each axis?
-        px_scale = math.fabs(cdelt1)
+        # Prepare pixel scale for each axis
+        px_scale = (math.fabs(cdelt1), math.fabs(cdelt2))
         cdbase = [np.sign(cdelt1), np.sign(cdelt2)]
 
         reuse_image = self.settings.get('reuse_image', False)
@@ -336,15 +338,6 @@ class Mosaic(GingaPlugin.LocalPlugin):
 
         time_intr1 = time.time()
 
-        # Add description for ChangeHistory
-        try:
-            iminfo = self.channel.get_image_info(self.img_mosaic.get('name'))
-            iminfo.reason_modified = 'Added {0}'.format(
-                ','.join([im.get('name') for im in images]))
-        except KeyError:
-            # mosaic image may have been deleted from channel
-            pass
-
         loc = self.img_mosaic.mosaic_inline(images,
                                             bg_ref=bg_ref,
                                             trim_px=trim_px,
@@ -352,6 +345,12 @@ class Mosaic(GingaPlugin.LocalPlugin):
                                             allow_expand=allow_expand,
                                             expand_pad_deg=expand_pad_deg,
                                             suppress_callback=True)
+
+        # Add description for ChangeHistory
+        info = dict(time_modified=datetime.utcnow(),
+                    reason_modified='Added {0}'.format(
+            ','.join([im.get('name') for im in images])))
+        self.fv.update_image_info(self.img_mosaic, info)
 
         # annotate ingested image with its name?
         if annotate and (not allow_expand):
@@ -441,25 +440,19 @@ class Mosaic(GingaPlugin.LocalPlugin):
 
         try:
             for url in paths:
-                if self.ev_intr.isSet():
+                if self.ev_intr.is_set():
                     break
                 mosaic_hdus = self.settings.get('mosaic_hdus', False)
                 if mosaic_hdus:
                     self.logger.debug("loading hdus")
+                    opener = io_fits.get_fitsloader(logger=self.logger)
                     # User wants us to mosaic HDUs
-                    # TODO: do this in a different thread?
-                    with pyfits.open(url, 'readonly') as in_f:
-                        i = 0
-                        for hdu in in_f:
-                            i += 1
-                            # TODO: I think we need a little more rigorous test
-                            # than just whether the data section is empty
-                            if hdu.data is None:
-                                continue
+                    opener.open_file(url, memmap=False)
+                    try:
+                        for i in range(len(opener)):
                             self.logger.debug("ingesting hdu #%d" % (i))
-                            image = None
                             try:
-                                image = self.fv.fits_opener.load_hdu(hdu)
+                                image = opener.get_hdu(i)
 
                             except Exception as e:
                                 self.logger.error(
@@ -481,6 +474,9 @@ class Mosaic(GingaPlugin.LocalPlugin):
                                     self.total_files += 1
 
                             self.ingest_one(image)
+                    finally:
+                        opener.close()
+                        opener = None
 
                 else:
                     image = image_loader(url)
@@ -576,9 +572,16 @@ class Mosaic(GingaPlugin.LocalPlugin):
         return self.img_mosaic
 
     def set_fov_cb(self, w):
-        fov_deg = float(w.get_text())
+        fov_str = w.get_text()
+        if ',' in fov_str:
+            x_fov, y_fov = fov_str.split(',')
+            x_fov, y_fov = float(x_fov), float(y_fov)
+            fov_deg = (x_fov, y_fov)
+            self.w.fov.set_text(str(x_fov) + ', ' + str(y_fov))
+        else:
+            fov_deg = float(fov_str)
+            self.w.fov.set_text(str(fov_deg))
         self.settings.set(fov_deg=fov_deg)
-        self.w.fov.set_text(str(fov_deg))
 
     def trim_pixels_cb(self, w):
         trim_px = int(w.get_text())

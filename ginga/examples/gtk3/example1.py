@@ -10,7 +10,7 @@ import logging
 
 from ginga.gtk3w.ImageViewGtk import CanvasView, ScrolledView
 from ginga.gtk3w import GtkHelp
-from ginga import AstroImage
+from ginga.util.loader import load_data
 
 from gi.repository import Gtk
 
@@ -38,7 +38,8 @@ class FitsViewer(object):
         fi.enable_autozoom('on')
         fi.set_callback('drag-drop', self.drop_file)
         fi.set_bg(0.2, 0.2, 0.2)
-        fi.ui_setActive(True)
+        fi.ui_set_active(True)
+        fi.enable_auto_orient(True)
         self.fitsimage = fi
 
         # enable some user interaction
@@ -50,15 +51,16 @@ class FitsViewer(object):
 
         # add scrollbar interface around this viewer
         si = ScrolledView(fi)
+        si.scroll_bars(horizontal='on', vertical='on')
 
         vbox.pack_start(si, True, True, 0)
 
         hbox = Gtk.HButtonBox()
         hbox.set_layout(Gtk.ButtonBoxStyle.END)
 
-        wopen = Gtk.Button("Open File")
+        wopen = Gtk.Button(label="Open File")
         wopen.connect('clicked', self.open_file)
-        wquit = Gtk.Button("Quit")
+        wquit = Gtk.Button(label="Quit")
         wquit.connect('clicked', self.quit)
 
         for w in (wopen, wquit):
@@ -71,8 +73,7 @@ class FitsViewer(object):
         return self.root
 
     def load_file(self, filepath):
-        image = AstroImage.AstroImage(logger=self.logger)
-        image.load_file(filepath)
+        image = load_data(filepath, logger=self.logger)
         self.fitsimage.set_image(image)
         self.root.set_title(filepath)
 

@@ -4,28 +4,20 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import absolute_import, print_function
-from ..util import six
-from ..util.six.moves import map
-
 import sys
 import time
 import threading
 import traceback
 
-if six.PY2:
-    import thread
-    import Queue
-else:
-    import _thread as thread
-    import queue as Queue
+import _thread as thread
+import queue as Queue
 
-    # NOTE: See http://bugs.python.org/issue7946
-    # we cannot effectively use threading for loading files/network/etc.
-    # without setting the switchinterval down on python 3 due to the new
-    # GIL implementation
-    _swival = 0.000001
-    sys.setswitchinterval(_swival)
+# NOTE: See http://bugs.python.org/issue7946
+# we cannot effectively use threading for loading files/network/etc.
+# without setting the switchinterval down on python 3 due to the new
+# GIL implementation
+_swival = 0.000001
+sys.setswitchinterval(_swival)
 
 from . import Callback  # noqa
 
@@ -184,7 +176,7 @@ class Task(Callback.Callbacks):
         """
         self.ev_done.wait(timeout=timeout)
 
-        if not self.ev_done.isSet():
+        if not self.ev_done.is_set():
             raise TaskTimeout("Task %s timed out." % self)
 
         # --> self.result is set
@@ -223,7 +215,7 @@ class Task(Callback.Callbacks):
         # [??] Should this be in a critical section?
 
         # Has done() already been called on this task?
-        if self.ev_done.isSet():
+        if self.ev_done.is_set():
             # ??
             if isinstance(self.result, Exception) and (not noraise):
                 raise self.result
@@ -488,7 +480,7 @@ class oldConcurrentAndTaskset(Task):
         self.totaltime = time.time()
 
         # Register termination callbacks for all my child tasks.
-        for task in self.taskseq:
+        for task in list(self.taskseq):
             self.taskset.append(task)
             task.add_callback('resolved', self.child_done, self.count)
             self.count += 1
@@ -497,7 +489,7 @@ class oldConcurrentAndTaskset(Task):
 
         # Now start each child task.
         with self.regcond:
-            for task in self.taskset:
+            for task in list(self.taskset):
                 task.initialize(self)
 
                 task.start()
@@ -753,7 +745,7 @@ class QueueTaskset(Task):
         self.count = 0
         self.totaltime = 0
         self.logger.debug("Queue Taskset starting")
-        while not self.ev_quit.isSet():
+        while not self.ev_quit.is_set():
             try:
                 self.check_state()
 
@@ -932,7 +924,7 @@ class WorkerThread(object):
 
         try:
             self.setstatus('idle')
-            while not self.ev_quit.isSet():
+            while not self.ev_quit.is_set():
                 try:
 
                     # Wait on our queue for a task; will timeout in
@@ -1012,7 +1004,7 @@ class ThreadPool(object):
         self.logger.debug("startall called")
         with self.regcond:
             while self.status != 'down':
-                if self.status in ('start', 'up') or self.ev_quit.isSet():
+                if self.status in ('start', 'up') or self.ev_quit.is_set():
                     # For now, abandon additional request to start
                     self.logger.error("ignoring duplicate request to start thread pool")
                     return
@@ -1022,7 +1014,7 @@ class ThreadPool(object):
                 self.regcond.wait()
 
             #assert(self.status == 'down')
-            if self.ev_quit.isSet():
+            if self.ev_quit.is_set():
                 return
 
             self.runningcount = 0
@@ -1046,7 +1038,7 @@ class ThreadPool(object):
             # themselves and last one up will set status to "up"
             if wait:
                 # Threads are on the way up.  Wait until last one starts.
-                while self.status != 'up' and not self.ev_quit.isSet():
+                while self.status != 'up' and not self.ev_quit.is_set():
                     self.logger.debug("waiting for threads: count=%d" %
                                       self.runningcount)
                     self.regcond.wait()
@@ -1076,7 +1068,7 @@ class ThreadPool(object):
         self.logger.debug("stopall called")
         with self.regcond:
             while self.status != 'up':
-                if self.status in ('stop', 'down') or self.ev_quit.isSet():
+                if self.status in ('stop', 'down') or self.ev_quit.is_set():
                     # For now, silently abandon additional request to stop
                     self.logger.warning("ignoring duplicate request to stop thread pool.")
                     return

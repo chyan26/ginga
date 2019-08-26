@@ -8,7 +8,6 @@
 # import time
 
 from ginga.gtk3w import GtkHelp
-import ginga.util.six as six
 
 from ginga.misc import Callback, Bunch, LineHistory
 from functools import reduce
@@ -117,8 +116,11 @@ class WidgetBase(Callback.Callbacks):
 
     def resize(self, width, height):
         self.widget.set_size_request(width, height)
+
         # hackish way to allow the widget to be resized down again later
-        # GObject.idle_add(self.widget.set_size_request, -1, -1)
+        # NOTE: this may cause some problems for sizing certain widgets
+        if width > 0 and height > 0:
+            GObject.idle_add(self.widget.set_size_request, -1, -1)
 
     def get_font(self, font_family, point_size):
         font = GtkHelp.get_font(font_family, point_size)
@@ -180,7 +182,7 @@ class TextEntry(WidgetBase):
         self.widget.set_editable(tf)
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.widget.modify_font(font)
 
@@ -223,7 +225,7 @@ class TextEntrySet(WidgetBase):
         self.entry.set_editable(tf)
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.widget.modify_font(font)
 
@@ -308,7 +310,7 @@ class TextArea(WidgetBase):
         self.tw.set_editable(tf)
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.tw.modify_font(font)
 
@@ -380,7 +382,7 @@ class Label(WidgetBase):
         self.label.set_text(text)
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.label.modify_font(font)
 
@@ -409,15 +411,14 @@ class ComboBox(WidgetBase):
     def __init__(self, editable=False):
         super(ComboBox, self).__init__()
 
-        if editable:
-            cb = GtkHelp.ComboBoxEntry()
-        else:
-            cb = GtkHelp.ComboBox()
+        cb = GtkHelp.ComboBox(has_entry=editable)
         liststore = Gtk.ListStore(GObject.TYPE_STRING)
         cb.set_model(liststore)
         cell = Gtk.CellRendererText()
         cb.pack_start(cell, True)
         cb.add_attribute(cell, 'text', 0)
+        if editable:
+            cb.set_entry_text_column(0)
         self.widget = cb
         self.widget.sconnect('changed', self._cb_redirect)
 
@@ -464,19 +465,37 @@ class ComboBox(WidgetBase):
     def clear(self):
         model = self.widget.get_model()
         model.clear()
+        if self.widget.get_has_entry():
+            entry = self.widget.get_entry()
+            entry.set_text('')
 
-    def show_text(self, text):
+    def set_text(self, text):
         model = self.widget.get_model()
         for i in range(len(model)):
             if model[i][0] == text:
                 self.widget.set_active(i)
                 return
 
+        if self.widget.get_has_entry():
+            entry = self.widget.get_child()
+            entry.set_text(text)
+
+    # to be deprecated someday
+    show_text = set_text
+
     def set_index(self, index):
         self.widget.set_active(index)
 
     def get_index(self):
         return self.widget.get_active()
+
+    def get_text(self):
+        if self.widget.get_has_entry():
+            entry = self.widget.get_child()
+            return entry.get_text()
+
+        idx = self.get_index()
+        return self.get_alpha(idx)
 
 
 class SpinBox(WidgetBase):
@@ -508,8 +527,10 @@ class SpinBox(WidgetBase):
 
 
 class Slider(WidgetBase):
-    def __init__(self, orientation='horizontal', track=False):
+    def __init__(self, orientation='horizontal', dtype=int, track=False):
         super(Slider, self).__init__()
+
+        # NOTE: parameter dtype is ignored for now for gtk3
 
         if orientation == 'horizontal':
             w = GtkHelp.HScale()
@@ -748,9 +769,10 @@ class TreeView(WidgetBase):
         if self.dragable:
             tv = GtkHelp.MultiDragDropTreeView()
             # enable drag from this widget
-            toImage = [("text/plain", 0, 0)]
+            targets = [("text/plain", 0, GtkHelp.DND_TARGET_TYPE_TEXT),
+                       ("text/uri-list", 0, GtkHelp.DND_TARGET_TYPE_URIS)]
             tv.enable_model_drag_source(Gdk.ModifierType.BUTTON1_MASK,
-                                        toImage, Gdk.DragAction.COPY)
+                                        targets, Gdk.DragAction.COPY)
             tv.connect("drag-data-get", self._start_drag)
         else:
             tv = Gtk.TreeView()
@@ -1006,8 +1028,8 @@ class TreeView(WidgetBase):
             model, iter1, iter2 = args[:3]
             bnch1 = model.get_value(iter1, 0)
             bnch2 = model.get_value(iter2, 0)
-            if isinstance(bnch1, six.string_types):
-                if isinstance(bnch2, six.string_types):
+            if isinstance(bnch1, str):
+                if isinstance(bnch2, str):
                     s1, s2 = bnch1.lower(), bnch2.lower()
                     if s1 < s2:
                         return -1
@@ -1015,7 +1037,7 @@ class TreeView(WidgetBase):
                         return 1
                 return 0
             val1, val2 = bnch1[idx], bnch2[idx]
-            if isinstance(val1, six.string_types):
+            if isinstance(val1, str):
                 val1, val2 = val1.lower(), val2.lower()
                 if val1 < val2:
                     return -1
@@ -1094,6 +1116,9 @@ class ContainerBase(WidgetBase):
         super(ContainerBase, self).__init__()
         self.children = []
 
+        for name in ['widget-added', 'widget-removed']:
+            self.enable_callback(name)
+
     def add_ref(self, ref):
         # TODO: should this be a weakref?
         self.children.append(ref)
@@ -1103,16 +1128,17 @@ class ContainerBase(WidgetBase):
         if delete:
             childw.destroy()
 
-    def remove(self, w, delete=False):
-        if w not in self.children:
+    def remove(self, child, delete=False):
+        if child not in self.children:
             raise KeyError("Widget is not a child of this container")
-        self.children.remove(w)
+        self.children.remove(child)
 
-        self._remove(w.get_widget(), delete=delete)
+        self._remove(child.get_widget(), delete=delete)
+        self.make_callback('widget-removed', child)
 
     def remove_all(self, delete=False):
-        for w in list(self.children):
-            self.remove(w, delete=delete)
+        for child in list(self.children):
+            self.remove(child, delete=delete)
 
     def get_children(self):
         return self.children
@@ -1158,6 +1184,7 @@ class Box(ContainerBase):
         expand = (float(stretch) > 0.0)
         self.widget.pack_start(child_w, expand, True, 0)
         self.widget.show_all()
+        self.make_callback('widget-added', child)
 
 
 class VBox(Box):
@@ -1218,8 +1245,10 @@ class TabWidget(ContainerBase):
             nb.connect("create-window", self._tab_detach_cb)
         nb.connect("page-added", self._tab_insert_cb)
         nb.connect("page-removed", self._tab_remove_cb)
-        nb.sconnect("switch-page", self._cb_redirect)
-        # nb.connect("switch-page", self._cb_redirect)
+        # contrary to some other widgets, we want the "tab changed" event
+        # when the index is switched programmatically as well as by user
+        ## nb.sconnect("switch-page", self._cb_redirect)
+        nb.connect("switch-page", self._cb_redirect)
         self.widget = nb
         self.set_tab_position(tabpos)
 
@@ -1263,8 +1292,12 @@ class TabWidget(ContainerBase):
 
     def _tab_remove_cb(self, nbw, nchild_w, page_num):
         global _widget_move_event
-        child = self._native_to_child(nchild_w)
-        _widget_move_event = WidgetMoveEvent(self, child)
+        try:
+            child = self._native_to_child(nchild_w)
+            _widget_move_event = WidgetMoveEvent(self, child)
+        except ValueError:
+            # we were triggered by a removal that is not a move
+            pass
 
     def _cb_redirect(self, nbw, gptr, index):
         child = self.index_to_widget(index)
@@ -1290,6 +1323,7 @@ class TabWidget(ContainerBase):
         self.widget.show_all()
         # attach title to child
         child.extdata.tab_title = title
+        self.make_callback('widget-added', child)
 
     def get_index(self):
         return self.widget.get_current_page()
@@ -1332,17 +1366,21 @@ class MDIWidget(ContainerBase):
         self.mode = 'mdi'
         self.true_mdi = True
 
-        # TODO: currently scrollbars are not working
+        # TODO: currently scrollbars are only partially working
         sw = Gtk.ScrolledWindow()
         sw.set_border_width(2)
         sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.widget = sw
         w = GtkHelp.MDIWidget()
         self.mdi_w = w
+        # Monkey patching the internal callbacks so that we can make
+        # the correct callbacks
         w._move_page = w.move_page
         w.move_page = self._window_moved
         w._resize_page = w.resize_page
         w.resize_page = self._window_resized
+        w._set_current_page = w.set_current_page
+        w.set_current_page = self._set_current_page
 
         sw.set_hadjustment(self.mdi_w.get_hadjustment())
         sw.set_vadjustment(self.mdi_w.get_vadjustment())
@@ -1379,15 +1417,12 @@ class MDIWidget(ContainerBase):
             self.mdi_w.move_page(subwin, x, y)
 
         subwin.add_callback('close', self._window_close, child)
+        self.make_callback('widget-added', child)
 
     def _remove(self, childw, delete=False):
         self.mdi_w.remove(childw)
         if delete:
             childw.destroy()
-
-    def _cb_redirect(self, nbw, gptr, index):
-        child = self.index_to_widget(index)
-        self.make_callback('page-switch', child)
 
     def _window_resized(self, subwin, wd, ht):
         self.mdi_w._resize_page(subwin, wd, ht)
@@ -1409,6 +1444,13 @@ class MDIWidget(ContainerBase):
 
     def _window_close(self, subwin, child):
         return self.make_callback('page-close', child)
+
+    def _set_current_page(self, idx):
+        _idx = self.mdi_w.get_current_page()
+        self.mdi_w._set_current_page(idx)
+        if _idx != idx:
+            child = self.index_to_widget(idx)
+            self.make_callback('page-switch', child)
 
     def get_index(self):
         return self.mdi_w.get_current_page()
@@ -1510,6 +1552,7 @@ class Splitter(ContainerBase):
             last.pack2(w)
 
         self.widget.show_all()
+        self.make_callback('widget-added', child)
 
     def _get_sizes(self, pane):
         rect = pane.get_allocation()
@@ -1586,6 +1629,7 @@ class GridBox(ContainerBase):
                            xoptions=xoptions, yoptions=yoptions,
                            xpadding=0, ypadding=0)
         self.widget.show_all()
+        self.make_callback('widget-added', child)
 
 
 class Toolbar(ContainerBase):
@@ -1607,9 +1651,12 @@ class Toolbar(ContainerBase):
             child = Button(text)
 
         if iconpath is not None:
-            wd, ht = 24, 24
             if iconsize is not None:
                 wd, ht = iconsize
+            else:
+                scale_f = _app.screen_res / 96.0
+                px = int(scale_f * 24)
+                wd, ht = px, px
             pixbuf = GtkHelp.pixbuf_new_from_file_at_size(iconpath, wd, ht)
             if pixbuf is not None:
                 image = Gtk.Image.new_from_pixbuf(pixbuf)
@@ -1623,12 +1670,14 @@ class Toolbar(ContainerBase):
         tool_w = Gtk.ToolItem.new()
         w = child.get_widget()
         tool_w.add(w)
+        w.show()
         tool = ContainerBase()
         tool.widget = tool_w
         tool_w.show()
         tool.add_ref(child)
         self.add_ref(tool)
         self.widget.insert(tool_w, -1)
+        self.make_callback('widget-added', child)
         return tool
 
     def add_menu(self, text, menu=None, mtype='tool'):
@@ -1697,6 +1746,7 @@ class Menu(ContainerBase):
         self.widget.append(menuitem_w)
         self.add_ref(child)
         # self.widget.show_all()
+        self.make_callback('widget-added', child)
 
     def add_name(self, name, checkable=False):
         child = MenuAction(text=name, checkable=checkable)
@@ -1724,10 +1774,7 @@ class Menu(ContainerBase):
     def popup(self, widget=None):
         menu = self.widget
         menu.show_all()
-        if six.PY2:
-            now = long(0)  # noqa
-        else:
-            now = int(0)
+        now = int(0)
         if menu.get_sensitive():
             menu.popup(None, None, None, None, 0, now)
 
@@ -1748,6 +1795,7 @@ class Menubar(ContainerBase):
         self.widget.append(item_w)
         self.menus[name] = child
         item_w.show()
+        self.make_callback('widget-added', child)
         return child
 
     def add_name(self, name):
@@ -1944,12 +1992,25 @@ class Application(Callback.Callbacks):
         self.wincnt = 0
 
         try:
-            screen = Gdk.screen_get_default()
-            self.screen_ht = screen.get_height()
-            self.screen_wd = screen.get_width()
-        except Exception:
+            display = Gdk.Display.get_default()
+            screen = display.get_default_screen()
+            window = screen.get_active_window()
+            monitor = screen.get_monitor_at_window(window)
+
+            g = screen.get_monitor_geometry(monitor)
+            self.screen_ht = g.height
+            self.screen_wd = g.width
+
+            self.screen_res = screen.get_resolution()
+
+            # hack for Gtk--scale fonts on HiDPI displays
+            scale = self.screen_res / 72.0
+            from ginga.fonts import font_asst
+            font_asst.default_scaling_factor = scale
+        except Exception as e:
             self.screen_wd = 1600
             self.screen_ht = 1200
+            self.screen_res = 96
         # self.logger.debug("screen dimensions %dx%d" % (
         #     self.screen_wd, self.screen_ht))
 
@@ -2013,8 +2074,14 @@ class Application(Callback.Callbacks):
         self.add_window(w)
         return w
 
+    def make_timer(self):
+        return GtkHelp.Timer()
+
     def mainloop(self):
         Gtk.main()
+
+    def quit(self):
+        Gtk.main_quit()
 
 
 class Dialog(TopLevelMixin, WidgetBase):
@@ -2103,7 +2170,9 @@ class DragPackage(object):
 
     def set_urls(self, urls):
         self._selection.set_uris(urls)
-        self._selection.set("text/plain", 0, '\n'.join(urls))
+
+    def set_text(self, text):
+        self._selection.set_text(text, len(text))
 
     def start_drag(self):
         pass
@@ -2184,12 +2253,20 @@ def make_widget(title, wtype):
 
 
 def hadjust(w, orientation):
+    """Ostensibly, a function to reduce the vertical footprint of a widget
+    that is normally used in a vertical stack (usually a Splitter), when it
+    is instead used in a horizontal orientation.
+    """
     if orientation != 'horizontal':
         return w
-    vbox = VBox()
-    vbox.add_widget(w)
-    vbox.add_widget(Label(''), stretch=1)
-    return vbox
+    # This currently does not seem to be needed for most plugins that are
+    # coded to flow either vertically or horizontally and, in fact, reduces
+    # the visual asthetic somewhat.
+    ## spl = Splitter(orientation='vertical')
+    ## spl.add_widget(w)
+    ## spl.add_widget(Label(''))
+    ## return spl
+    return w
 
 
 def build_info(captions, orientation='vertical'):

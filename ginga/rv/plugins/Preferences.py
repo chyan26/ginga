@@ -268,6 +268,40 @@ thumbnail for images loaded into that channel.  In cases where many
 images are being loaded into a channel frequently (e.g., a low frequency
 video feed), it may be undesirable to create thumbnails for all of them.
 
+**General Preferences**
+
+The "Num Images" setting specifies how many images can be retained in
+buffers in this channel before being ejected.  A value of zero (0) means
+unlimited--images will never be ejected.  If an image was loaded from
+some accessible storage and it is ejected, it will automatically be
+reloaded if the image is revisited by navigating the channel.
+
+The "Sort Order" setting determines whether images are sorted in the
+channel alphabetically by name or by the time when they were loaded.
+This principally affects the order in which images are cycled when using
+the up/down "arrow" keys or buttons, and not necessarily how they are
+displayed in plugins like "Contents" or "Thumbs" (which generally have
+their own setting preference for ordering).
+
+The "Use scrollbars" check box controls whether the channel viewer will
+show scroll bars around the edge of the viewer frame.
+
+**Remember Preferences**
+
+When an image is loaded, a profile is created and attached to the image
+metadata in the channel.  These profiles are continuously updated with
+viewer state as the image is manipulated.  The "Remember" preferences
+control which parts of these profiles are restored to the viewer state
+when the image is navigated to in the channel:
+
+* "Restore Scale" will restore the zoom (scale) level
+* "Restore Pan" will restore the pan position
+* "Restore Transform" will restore any flip or swap axes transforms
+* "Restore Rotation" will restore any rotation of the image
+* "Restore Cuts" will restore any cut levels for the image
+* "Restore Scale" will restore any coloring adjustments made (including
+  color map, color distribution, contrast/stretch, etc.)
+
 """
 import math
 
@@ -292,6 +326,7 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.imap_names = imap.get_names()
         self.zoomalg_names = ('step', 'rate')
 
+        self.t_ = self.fitsimage.get_settings()
         self.autocuts_cache = {}
         self.gui_up = False
 
@@ -303,13 +338,21 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.pancoord_options = ('data', 'wcs')
         self.sort_options = ('loadtime', 'alpha')
 
-        self.t_ = self.fitsimage.get_settings()
-        self.t_.get_setting('autocuts').add_callback(
-            'set', self.autocuts_changed_ext_cb)
+        for key in ['color_map', 'intensity_map',
+                    'color_algorithm', 'color_hashsize']:
+            self.t_.get_setting(key).add_callback(
+                'set', self.rgbmap_changed_ext_cb)
+
         self.t_.get_setting('autozoom').add_callback(
             'set', self.autozoom_changed_ext_cb)
         self.t_.get_setting('autocenter').add_callback(
             'set', self.autocenter_changed_ext_cb)
+        self.t_.get_setting('autocuts').add_callback(
+            'set', self.autocuts_changed_ext_cb)
+        for key in ['switchnew', 'raisenew', 'genthumb']:
+            self.t_.get_setting(key).add_callback(
+                'set', self.set_chprefs_ext_cb)
+
         for key in ['pan']:
             self.t_.get_setting(key).add_callback(
                 'set', self.pan_changed_ext_cb)
@@ -330,12 +373,12 @@ class Preferences(GingaPlugin.LocalPlugin):
             self.t_.get_setting(name).add_callback(
                 'set', self.set_transform_ext_cb)
 
-        ## for name in ('autocut_method', 'autocut_params'):
-        ##     self.t_.get_setting(name).add_callback('set', self.set_autocuts_ext_cb)
-
-        ## for key in ['color_algorithm', 'color_hashsize', 'color_map',
-        ##             'intensity_map']:
-        ##     self.t_.get_setting(key).add_callback('set', self.cmap_changed_ext_cb)
+        # TODO: assigning a callback for "autocut_method" results in a bad
+        # feedback loop, at least under Qt
+        ## self.t_.get_setting('autocut_method').add_callback('set',
+        ##                                                    self.set_autocut_method_ext_cb)
+        self.t_.get_setting('autocut_params').add_callback('set',
+                                                           self.set_autocut_params_ext_cb)
 
         self.t_.setdefault('wcs_coords', 'icrs')
         self.t_.setdefault('wcs_display', 'sexagesimal')
@@ -384,8 +427,12 @@ class Preferences(GingaPlugin.LocalPlugin):
             options.append(name)
             combobox.append_text(name)
             index += 1
-        index = self.calg_names.index(self.t_.get('color_algorithm', "linear"))
-        combobox.set_index(index)
+        try:
+            index = self.calg_names.index(self.t_.get('color_algorithm',
+                                                      "linear"))
+            combobox.set_index(index)
+        except Exception:
+            pass
         combobox.add_callback('activated', self.set_calg_cb)
 
         ## entry = b.table_size
@@ -460,8 +507,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         for name in self.autocut_methods:
             combobox.append_text(name)
             index += 1
-        index = self.autocut_methods.index(method)
-        combobox.set_index(index)
+        try:
+            index = self.autocut_methods.index(method)
+            combobox.set_index(index)
+        except Exception:
+            pass
         combobox.add_callback('activated', self.set_autocut_method_cb)
         b.auto_method.set_tooltip("Choose algorithm for auto levels")
         vbox2.add_widget(w, stretch=0)
@@ -552,8 +602,8 @@ class Preferences(GingaPlugin.LocalPlugin):
                     ('Stretch Factor:', 'label', 'Stretch Factor', 'spinfloat'),
                     ('Scale X:', 'label', 'Scale X', 'entryset'),
                     ('Scale Y:', 'label', 'Scale Y', 'entryset'),
-                    ('Scale Min:', 'label', 'Scale Min', 'spinfloat'),
-                    ('Scale Max:', 'label', 'Scale Max', 'spinfloat'),
+                    ('Scale Min:', 'label', 'Scale Min', 'entryset'),
+                    ('Scale Max:', 'label', 'Scale Max', 'entryset'),
                     ('Interpolation:', 'label', 'Interpolation', 'combobox'),
                     ('Zoom Defaults', 'button'))
         w, b = Widgets.build_info(captions, orientation=orientation)
@@ -564,8 +614,11 @@ class Preferences(GingaPlugin.LocalPlugin):
             b.zoom_alg.append_text(name.capitalize())
             index += 1
         zoomalg = self.t_.get('zoom_algorithm', "step")
-        index = self.zoomalg_names.index(zoomalg)
-        b.zoom_alg.set_index(index)
+        try:
+            index = self.zoomalg_names.index(zoomalg)
+            b.zoom_alg.set_index(index)
+        except Exception:
+            pass
         b.zoom_alg.set_tooltip("Choose Zoom algorithm")
         b.zoom_alg.add_callback('activated', self.set_zoomalg_cb)
 
@@ -603,16 +656,12 @@ class Preferences(GingaPlugin.LocalPlugin):
         b.scale_y.add_callback('activated', self.set_scale_cb)
 
         scale_min, scale_max = self.t_['scale_min'], self.t_['scale_max']
-        b.scale_min.set_limits(0.00001, 1.0, incr_value=1.0)
-        b.scale_min.set_value(scale_min)
-        b.scale_min.set_decimals(8)
-        b.scale_min.add_callback('value-changed', self.set_scale_limit_cb)
+        b.scale_min.set_text(str(scale_min))
+        b.scale_min.add_callback('activated', self.set_scale_limit_cb)
         b.scale_min.set_tooltip("Set the minimum allowed scale in any axis")
 
-        b.scale_max.set_limits(1.0, 10000.0, incr_value=1.0)
-        b.scale_max.set_value(scale_max)
-        b.scale_max.set_decimals(8)
-        b.scale_max.add_callback('value-changed', self.set_scale_limit_cb)
+        b.scale_max.set_text(str(scale_max))
+        b.scale_max.add_callback('activated', self.set_scale_limit_cb)
         b.scale_min.set_tooltip("Set the maximum allowed scale in any axis")
 
         index = 0
@@ -747,7 +796,8 @@ class Preferences(GingaPlugin.LocalPlugin):
 
         captions = (('Num Images:', 'label', 'Num Images', 'entryset'),
                     ('Sort Order:', 'label', 'Sort Order', 'combobox'),
-                    ('Preload Images', 'checkbutton'),
+                    ('Use scrollbars', 'checkbutton',
+                     'Preload Images', 'checkbutton'),
                     )
         w, b = Widgets.build_info(captions, orientation=orientation)
         self.w.update(b)
@@ -769,6 +819,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         combobox.add_callback('activated', self.set_sort_cb)
         b.sort_order.set_tooltip("Sort order for images in channel")
 
+        scrollbars = self.t_.get('scrollbars', 'off')
+        self.w.use_scrollbars.set_state(scrollbars in ['on', 'auto'])
+        self.w.use_scrollbars.add_callback('activated', self.set_scrollbars_cb)
+        b.use_scrollbars.set_tooltip("Use scrollbars around viewer")
+
         preload_images = self.t_.get('preload_images', False)
         self.w.preload_images.set_state(preload_images)
         self.w.preload_images.add_callback('activated', self.set_preload_cb)
@@ -782,32 +837,37 @@ class Preferences(GingaPlugin.LocalPlugin):
 
         exp = Widgets.Expander("Remember")
 
-        captions = (('Save Scale', 'checkbutton',
-                     'Save Pan', 'checkbutton'),
-                    ('Save Transform', 'checkbutton',
-                    'Save Rotation', 'checkbutton'),
-                    ('Save Cuts', 'checkbutton'),
+        captions = (('Restore Scale', 'checkbutton',
+                     'Restore Pan', 'checkbutton'),
+                    ('Restore Transform', 'checkbutton',
+                    'Restore Rotation', 'checkbutton'),
+                    ('Restore Cuts', 'checkbutton',
+                     'Restore Color Map', 'checkbutton'),
                     )
         w, b = Widgets.build_info(captions, orientation=orientation)
         self.w.update(b)
 
-        self.w.save_scale.set_state(self.t_.get('profile_use_scale', False))
-        self.w.save_scale.add_callback('activated', self.set_profile_cb)
-        self.w.save_scale.set_tooltip("Remember scale with image")
-        self.w.save_pan.set_state(self.t_.get('profile_use_pan', False))
-        self.w.save_pan.add_callback('activated', self.set_profile_cb)
-        self.w.save_pan.set_tooltip("Remember pan position with image")
-        self.w.save_transform.set_state(
+        self.w.restore_scale.set_state(self.t_.get('profile_use_scale', False))
+        self.w.restore_scale.add_callback('activated', self.set_profile_cb)
+        self.w.restore_scale.set_tooltip("Remember scale with image")
+        self.w.restore_pan.set_state(self.t_.get('profile_use_pan', False))
+        self.w.restore_pan.add_callback('activated', self.set_profile_cb)
+        self.w.restore_pan.set_tooltip("Remember pan position with image")
+        self.w.restore_transform.set_state(
             self.t_.get('profile_use_transform', False))
-        self.w.save_transform.add_callback('activated', self.set_profile_cb)
-        self.w.save_transform.set_tooltip("Remember transform with image")
-        self.w.save_rotation.set_state(
+        self.w.restore_transform.add_callback('activated', self.set_profile_cb)
+        self.w.restore_transform.set_tooltip("Remember transform with image")
+        self.w.restore_rotation.set_state(
             self.t_.get('profile_use_rotation', False))
-        self.w.save_rotation.add_callback('activated', self.set_profile_cb)
-        self.w.save_rotation.set_tooltip("Remember rotation with image")
-        self.w.save_cuts.set_state(self.t_.get('profile_use_cuts', False))
-        self.w.save_cuts.add_callback('activated', self.set_profile_cb)
-        self.w.save_cuts.set_tooltip("Remember cut levels with image")
+        self.w.restore_rotation.add_callback('activated', self.set_profile_cb)
+        self.w.restore_rotation.set_tooltip("Remember rotation with image")
+        self.w.restore_cuts.set_state(self.t_.get('profile_use_cuts', False))
+        self.w.restore_cuts.add_callback('activated', self.set_profile_cb)
+        self.w.restore_cuts.set_tooltip("Remember cut levels with image")
+        self.w.restore_color_map.set_state(
+            self.t_.get('profile_use_color_map', False))
+        self.w.restore_color_map.add_callback('activated', self.set_profile_cb)
+        self.w.restore_color_map.set_tooltip("Remember color map with image")
 
         fr = Widgets.Frame()
         fr.set_widget(w)
@@ -834,8 +894,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         for name in self.icc_profiles:
             combobox.append_text(str(name))
             index += 1
-        index = self.icc_profiles.index(value)
-        combobox.set_index(index)
+        try:
+            index = self.icc_profiles.index(value)
+            combobox.set_index(index)
+        except Exception:
+            pass
         combobox.add_callback('activated', self.set_icc_profile_cb)
         combobox.set_tooltip("ICC profile for the viewer display")
 
@@ -845,8 +908,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         for name in self.icc_intents:
             combobox.append_text(name)
             index += 1
-        index = self.icc_intents.index(value)
-        combobox.set_index(index)
+        try:
+            index = self.icc_intents.index(value)
+            combobox.set_index(index)
+        except Exception:
+            pass
         combobox.add_callback('activated', self.set_icc_profile_cb)
         combobox.set_tooltip("Rendering intent for the viewer display")
 
@@ -856,8 +922,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         for name in self.icc_profiles:
             combobox.append_text(str(name))
             index += 1
-        index = self.icc_profiles.index(value)
-        combobox.set_index(index)
+        try:
+            index = self.icc_profiles.index(value)
+            combobox.set_index(index)
+        except Exception:
+            pass
         combobox.add_callback('activated', self.set_icc_profile_cb)
         combobox.set_tooltip("ICC profile for soft proofing")
 
@@ -867,8 +936,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         for name in self.icc_intents:
             combobox.append_text(name)
             index += 1
-        index = self.icc_intents.index(value)
-        combobox.set_index(index)
+        try:
+            index = self.icc_intents.index(value)
+            combobox.set_index(index)
+        except Exception:
+            pass
         combobox.add_callback('activated', self.set_icc_profile_cb)
         combobox.set_tooltip("Rendering intent for soft proofing")
 
@@ -909,60 +981,24 @@ class Preferences(GingaPlugin.LocalPlugin):
         """This callback is invoked when the user selects a new color
         map from the preferences pane."""
         name = cmap.get_names()[index]
-        self.set_cmap_byname(name)
         self.t_.set(color_map=name)
-
-    def set_cmap_byname(self, name):
-        # Get colormap
-        try:
-            cm = cmap.get_cmap(name)
-        except KeyError:
-            raise ValueError("No such color map name: '%s'" % (name))
-
-        rgbmap = self.fitsimage.get_rgbmap()
-        rgbmap.set_cmap(cm)
 
     def set_imap_cb(self, w, index):
         """This callback is invoked when the user selects a new intensity
         map from the preferences pane."""
         name = imap.get_names()[index]
-        self.set_imap_byname(name)
         self.t_.set(intensity_map=name)
-
-    def set_imap_byname(self, name):
-        # Get intensity map
-        try:
-            im = imap.get_imap(name)
-        except KeyError:
-            raise ValueError("No such intensity map name: '%s'" % (name))
-
-        rgbmap = self.fitsimage.get_rgbmap()
-        rgbmap.set_imap(im)
 
     def set_calg_cb(self, w, index):
         """This callback is invoked when the user selects a new color
         hashing algorithm from the preferences pane."""
         #index = w.get_index()
         name = self.calg_names[index]
-        self.set_calg_byname(name)
+        self.t_.set(color_algorithm=name)
 
     def set_tablesize_cb(self, w):
         value = int(w.get_text())
-        rgbmap = self.fitsimage.get_rgbmap()
-        rgbmap.set_hash_size(value)
         self.t_.set(color_hashsize=value)
-
-    def set_calg_byname(self, name):
-        # Get color mapping algorithm
-        rgbmap = self.fitsimage.get_rgbmap()
-        try:
-            rgbmap.set_hash_algorithm(name)
-        except KeyError:
-            raise ValueError("No such color algorithm name: '%s'" % (name))
-
-        # Doesn't this force a redraw?  Following redraw should be unecessary.
-        self.t_.set(color_algorithm=name)
-        self.fitsimage.redraw(whence=2)
 
     def set_default_cmaps(self):
         cmap_name = "gray"
@@ -971,22 +1007,15 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.w.cmap_choice.set_index(index)
         index = self.imap_names.index(imap_name)
         self.w.imap_choice.set_index(index)
-        self.set_cmap_byname(cmap_name)
-        self.t_.set(color_map=cmap_name)
-        self.set_imap_byname(imap_name)
-        self.t_.set(intensity_map=imap_name)
+        self.t_.set(color_map=cmap_name, intensity_map=imap_name)
 
     def set_default_distmaps(self):
         name = 'linear'
         index = self.calg_names.index(name)
         self.w.calg_choice.set_index(index)
-        self.set_calg_byname(name)
-        self.t_.set(color_algorithm=name)
         hashsize = 65535
-        self.t_.set(color_hashsize=hashsize)
         ## self.w.table_size.set_text(str(hashsize))
-        rgbmap = self.fitsimage.get_rgbmap()
-        rgbmap.set_hash_size(hashsize)
+        self.t_.set(color_algorithm=name, color_hashsize=hashsize)
 
     def set_zoomrate_cb(self, w, rate):
         self.t_.set(zoom_rate=rate)
@@ -1059,7 +1088,7 @@ class Preferences(GingaPlugin.LocalPlugin):
         index = self.autocenter_options.index(option)
         self.w.center_new.set_index(index)
 
-    def set_scale_cb(self, w):
+    def set_scale_cb(self, w, val):
         scale_x = float(self.w.scale_x.get_text())
         scale_y = float(self.w.scale_y.get_text())
         self.fitsimage.scale_to(scale_x, scale_y)
@@ -1071,9 +1100,17 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.w.scale_x.set_text(str(scale_x))
         self.w.scale_y.set_text(str(scale_y))
 
-    def set_scale_limit_cb(self, w, val):
-        scale_min = float(self.w.scale_min.get_value())
-        scale_max = float(self.w.scale_max.get_value())
+    def set_scale_limit_cb(self, *args):
+        scale_min = self.w.scale_min.get_text().lower()
+        if scale_min == 'none':
+            scale_min = None
+        else:
+            scale_min = float(scale_min)
+        scale_max = self.w.scale_max.get_text().lower()
+        if scale_max == 'none':
+            scale_max = None
+        else:
+            scale_max = float(scale_max)
         self.t_.set(scale_min=scale_min, scale_max=scale_max)
 
     def set_autozoom_cb(self, w, idx):
@@ -1088,8 +1125,11 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.w.zoom_new.set_index(index)
 
     def config_autocut_params(self, method):
-        index = self.autocut_methods.index(method)
-        self.w.auto_method.set_index(index)
+        try:
+            index = self.autocut_methods.index(method)
+            self.w.auto_method.set_index(index)
+        except Exception:
+            pass
 
         # remove old params
         self.w.acvbox.remove_all()
@@ -1114,23 +1154,23 @@ class Preferences(GingaPlugin.LocalPlugin):
         # Add this set of widgets to the pane
         self.w.acvbox.add_widget(w, stretch=1)
 
-    def set_autocuts_ext_cb(self, setting, value):
+    def set_autocut_method_ext_cb(self, setting, value):
         if not self.gui_up:
             return
 
-        if setting.name == 'autocut_method':
-            # NOTE: use gui_do?
-            self.config_autocut_params(value)
+        autocut_method = self.t_['autocut_method']
+        self.fv.gui_do(self.config_autocut_params, autocut_method)
 
-        elif setting.name == 'autocut_params':
-            # NOTE: use gui_do?
-            # TODO: set the params from this tuple
-            #params = dict(value)
-            #self.ac_params.params.update(params)
-            self.ac_params.params_to_widgets()
+    def set_autocut_params_ext_cb(self, setting, value):
+        if not self.gui_up:
+            return
+
+        params = self.t_['autocut_params']
+        params_d = dict(params)   # noqa
+        self.ac_params.update_params(params_d)
+        #self.fv.gui_do(self.ac_params.params_to_widgets)
 
     def set_autocut_method_cb(self, w, idx):
-        #idx = self.w.auto_method.get_index()
         method = self.autocut_methods[idx]
 
         self.config_autocut_params(method)
@@ -1174,6 +1214,31 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.w.flip_y.set_state(flip_y)
         self.w.swap_xy.set_state(swap_xy)
 
+    def rgbmap_changed_ext_cb(self, setting, value):
+        if not self.gui_up:
+            return
+
+        calg_name = self.t_['color_algorithm']
+        try:
+            idx = self.calg_names.index(calg_name)
+        except IndexError:
+            idx = 0
+        self.w.algorithm.set_index(idx)
+
+        cmap_name = self.t_['color_map']
+        try:
+            idx = self.cmap_names.index(cmap_name)
+        except IndexError:
+            idx = 0
+        self.w.colormap.set_index(idx)
+
+        imap_name = self.t_['intensity_map']
+        try:
+            idx = self.imap_names.index(imap_name)
+        except IndexError:
+            idx = 0
+        self.w.intensity.set_index(idx)
+
     def set_buflen_ext_cb(self, setting, value):
         num_images = self.t_['numImages']
 
@@ -1196,6 +1261,12 @@ class Preferences(GingaPlugin.LocalPlugin):
         """This callback is invoked when the user checks the preload images
         box in the preferences pane."""
         self.t_.set(preload_images=tf)
+
+    def set_scrollbars_cb(self, w, tf):
+        """This callback is invoked when the user checks the 'Use Scrollbars'
+        box in the preferences pane."""
+        scrollbars = 'on' if tf else 'off'
+        self.t_.set(scrollbars=scrollbars)
 
     def set_icc_profile_cb(self, setting, idx):
         idx = self.w.output_icc_profile.get_index()
@@ -1305,16 +1376,24 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.t_.set(switchnew=switchnew, raisenew=raisenew,
                     genthumb=genthumb)
 
+    def set_chprefs_ext_cb(self, *args):
+        if self.gui_up:
+            self.w.follow_new.set_state(self.t_['switchnew'])
+            self.w.raise_new.set_state(self.t_['raisenew'])
+            self.w.create_thumbnail.set_state(self.t_['genthumb'])
+
     def set_profile_cb(self, *args):
-        save_scale = (self.w.save_scale.get_state() != 0)
-        save_pan = (self.w.save_pan.get_state() != 0)
-        save_cuts = (self.w.save_cuts.get_state() != 0)
-        save_transform = (self.w.save_transform.get_state() != 0)
-        save_rotation = (self.w.save_rotation.get_state() != 0)
-        self.t_.set(profile_use_scale=save_scale, profile_use_pan=save_pan,
-                    profile_use_cuts=save_cuts,
-                    profile_use_transform=save_transform,
-                    profile_use_rotation=save_rotation)
+        restore_scale = (self.w.restore_scale.get_state() != 0)
+        restore_pan = (self.w.restore_pan.get_state() != 0)
+        restore_cuts = (self.w.restore_cuts.get_state() != 0)
+        restore_transform = (self.w.restore_transform.get_state() != 0)
+        restore_rotation = (self.w.restore_rotation.get_state() != 0)
+        restore_color_map = (self.w.restore_color_map.get_state() != 0)
+        self.t_.set(profile_use_scale=restore_scale, profile_use_pan=restore_pan,
+                    profile_use_cuts=restore_cuts,
+                    profile_use_transform=restore_transform,
+                    profile_use_rotation=restore_rotation,
+                    profile_use_color_map=restore_color_map)
 
     def set_buffer_cb(self, *args):
         num_images = int(self.w.num_images.get_text())
@@ -1382,10 +1461,10 @@ class Preferences(GingaPlugin.LocalPlugin):
         self.w.scale_x.set_text(str(scale_x))
         self.w.scale_y.set_text(str(scale_y))
 
-        scale_min = prefs.get('scale_min', 0.00001)
-        self.w.scale_min.set_value(scale_min)
-        scale_max = prefs.get('scale_max', 10000.0)
-        self.w.scale_max.set_value(scale_max)
+        scale_min = prefs.get('scale_min', None)
+        self.w.scale_min.set_text(str(scale_min))
+        scale_max = prefs.get('scale_max', None)
+        self.w.scale_max.set_text(str(scale_max))
 
         # panning settings
         self._update_pan_coords()
@@ -1447,15 +1526,17 @@ class Preferences(GingaPlugin.LocalPlugin):
 
         # profile settings
         prefs.setdefault('profile_use_scale', False)
-        self.w.save_scale.set_state(prefs['profile_use_scale'])
+        self.w.restore_scale.set_state(prefs['profile_use_scale'])
         prefs.setdefault('profile_use_pan', False)
-        self.w.save_pan.set_state(prefs['profile_use_pan'])
+        self.w.restore_pan.set_state(prefs['profile_use_pan'])
         prefs.setdefault('profile_use_cuts', False)
-        self.w.save_cuts.set_state(prefs['profile_use_cuts'])
+        self.w.restore_cuts.set_state(prefs['profile_use_cuts'])
         prefs.setdefault('profile_use_transform', False)
-        self.w.save_transform.set_state(prefs['profile_use_transform'])
+        self.w.restore_transform.set_state(prefs['profile_use_transform'])
         prefs.setdefault('profile_use_rotation', False)
-        self.w.save_rotation.set_state(prefs['profile_use_rotation'])
+        self.w.restore_rotation.set_state(prefs['profile_use_rotation'])
+        prefs.setdefault('profile_use_color_map', False)
+        self.w.restore_color_map.set_state(prefs['profile_use_color_map'])
 
     def save_preferences(self):
         self.t_.save()

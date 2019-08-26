@@ -4,11 +4,8 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import absolute_import
-
 from io import BytesIO
 
-import ginga.util.six as six
 from ginga.qtw.QtHelp import QtCore
 from ginga.qtw import ImageViewQt
 from ginga import Mixins, Bindings
@@ -19,10 +16,7 @@ from .CanvasRenderGL import CanvasRenderer
 
 # GL imports
 # TODO: find how to import this from qtpy
-if six.PY2:
-    from PyQt4.QtOpenGL import QGLWidget as QOpenGLWidget
-else:
-    from PyQt5.QtOpenGL import QGLWidget as QOpenGLWidget
+from PyQt5.QtOpenGL import QGLWidget as QOpenGLWidget
 
 
 class ImageViewQtGLError(ImageViewQt.ImageViewQtError):
@@ -35,13 +29,12 @@ class RenderGLWidget(QOpenGLWidget):
         QOpenGLWidget.__init__(self, *args, **kwdargs)
 
         self.viewer = None
-        self._drawing = False
 
     def initializeGL(self):
         self.viewer.renderer.gl_initialize()
 
     def resizeGL(self, width, height):
-        self.viewer.renderer.gl_resize(width, height)
+        self.viewer.configure_window(width, height)
 
     def paintGL(self):
         self.viewer.renderer.gl_paint()
@@ -73,22 +66,11 @@ class ImageViewQtGL(ImageViewQt.ImageViewQt):
         self.trcat['CartesianNativeTransform'] = transform.PassThruTransform
         self.recalc_transforms()
 
-    def render_image(self, rgbobj, dst_x, dst_y):
-        """Render the image represented by (rgbobj) at dst_x, dst_y
-        in the pixel space.
-        """
-        pos = (0, 0)
-        arr = self.getwin_array(order=self.rgb_order, alpha=1.0)
-        #arr = rgbobj.get_array(self.rgb_order)
-        #pos = (dst_x, dst_y)
-        #print('dst', pos)
-        #pos = self.tform['window_to_native'].to_(pos)
-        #print('dst(c)', pos)
-        self.renderer.gl_set_image(arr, pos)
-
     def configure_window(self, width, height):
         self.logger.debug("window size reconfigured to %dx%d" % (
             width, height))
+        self.renderer.resize((width, height))
+
         self.configure(width, height)
 
     def get_rgb_image_as_widget(self):
@@ -154,7 +136,7 @@ class ImageViewZoom(Mixins.UIMixin, ImageViewEvent):
                                 rgbmap=rgbmap)
         Mixins.UIMixin.__init__(self)
 
-        self.ui_setActive(True)
+        self.ui_set_active(True)
 
         if bindmap is None:
             bindmap = ImageViewZoom.bindmapClass(self.logger)

@@ -4,7 +4,6 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import absolute_import, print_function
 
 import os
 import glob
@@ -135,6 +134,13 @@ class ColorManager(object):
             self.logger.warning("Leaving image unprofiled.")
 
         return image
+
+    def profile_to_working_numpy(self, image_np, kwds, intent=None):
+
+        image_in = toimage(image_np)
+        image_out = self.profile_to_working_pil(image_in, kwds,
+                                                intent=intent)
+        return fromimage(image_out)
 
 
 # --- Color Management conversion functions ---

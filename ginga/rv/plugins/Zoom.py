@@ -90,20 +90,23 @@ class Zoom(GingaPlugin.GlobalPlugin):
                 self.settings.get('zoom_imap_name', None) is None):
             self.copy_attrs.append('rgbmap')
 
-        self._wd = 200
-        self._ht = 200
+        self._wd = 300
+        self._ht = 300
+        _sz = max(self._wd, self._ht)
+        # hack to set a reasonable starting position for the splitter
+        self._split_sizes = [_sz, _sz]
 
         fv.add_callback('add-channel', self.add_channel)
         fv.add_callback('channel-change', self.focus_cb)
 
+        self.gui_up = False
+
     def build_gui(self, container):
 
-        vbox, sw, orientation = Widgets.get_oriented_box(container,
-                                                         fill=True,
-                                                         scrolled=False)
-        vbox.set_border_width(4)
-        vbox.set_spacing(2)
+        vtop = Widgets.VBox()
+        vtop.set_border_width(4)
 
+        box, sw, orientation = Widgets.get_oriented_box(container)
         # Uncomment to debug; passing parent logger generates too
         # much noise in the main logger
         #zi = Viewers.CanvasView(logger=self.logger)
@@ -111,7 +114,6 @@ class Zoom(GingaPlugin.GlobalPlugin):
         zi.set_desired_size(self._wd, self._ht)
         zi.enable_autozoom('off')
         zi.enable_autocuts('off')
-        #zi.set_scale_limits(0.001, 1000.0)
         zi.zoom_to(self.default_zoom)
         settings = zi.get_settings()
         settings.get_setting('zoomlevel').add_callback(
@@ -135,8 +137,9 @@ class Zoom(GingaPlugin.GlobalPlugin):
 
         iw = Viewers.GingaViewerWidget(zi)
         iw.resize(self._wd, self._ht)
-        vpaned = Widgets.Splitter(orientation=orientation)
-        vpaned.add_widget(iw)
+        paned = Widgets.Splitter(orientation=orientation)
+        paned.add_widget(iw)
+        self.w.splitter = paned
 
         vbox2 = Widgets.VBox()
         captions = (("Zoom Radius:", 'label', 'Zoom Radius', 'hscale'),
@@ -182,34 +185,57 @@ class Zoom(GingaPlugin.GlobalPlugin):
         spacer = Widgets.Label('')
         vbox2.add_widget(spacer, stretch=1)
 
-        vpaned.add_widget(vbox2)
+        box.add_widget(vbox2, stretch=1)
 
-        vbox.add_widget(vpaned, stretch=1)
+        paned.add_widget(sw)
+        paned.set_sizes(self._split_sizes)
 
-        container.add_widget(sw, stretch=1)
+        vtop.add_widget(paned, stretch=5)
+
+        btns = Widgets.HBox()
+        btns.set_border_width(4)
+        btns.set_spacing(4)
+
+        btn = Widgets.Button("Close")
+        btn.add_callback('activated', lambda w: self.close())
+        btns.add_widget(btn)
+        btn = Widgets.Button("Help")
+        btn.add_callback('activated', lambda w: self.help())
+        btns.add_widget(btn, stretch=0)
+        btns.add_widget(Widgets.Label(''), stretch=1)
+        vtop.add_widget(btns, stretch=0)
+
+        container.add_widget(vtop, stretch=5)
+        self.gui_up = True
 
     def prepare(self, fitsimage):
         fitssettings = fitsimage.get_settings()
         zoomsettings = self.zoomimage.get_settings()
         fitsimage.add_callback('cursor-changed', self.motion_cb)
-        for name in ['cuts']:
-            fitssettings.get_setting(name).add_callback(
-                'set', self.cutset_cb, fitsimage)
-        fitsimage.add_callback('transform', self.transform_cb)
-        fitssettings.copy_settings(zoomsettings, ['rot_deg'])
-        fitssettings.get_setting('rot_deg').add_callback(
-            'set', self.rotate_cb, fitsimage)
+        fitsimage.add_callback('redraw', self.redraw_cb)
         fitssettings.get_setting('zoomlevel').add_callback(
             'set', self.zoomset_cb, fitsimage)
 
     def add_channel(self, viewer, chinfo):
+        if not self.gui_up:
+            return
         self.prepare(chinfo.fitsimage)
 
     def start(self):
         names = self.fv.get_channel_names()
         for name in names:
-            chinfo = self.fv.get_channel(name)
-            self.add_channel(self.fv, chinfo)
+            channel = self.fv.get_channel(name)
+            self.add_channel(self.fv, channel)
+
+        # set up for currently focused channel
+        channel = self.fv.get_channel_info()
+        if channel is not None:
+            self.focus_cb(self.fv, channel)
+
+    def stop(self):
+        self.gui_up = False
+        self._split_sizes = self.w.splitter.get_sizes()
+        return True
 
     # CALLBACKS
 
@@ -220,6 +246,8 @@ class Zoom(GingaPlugin.GlobalPlugin):
         fitsimage.copy_attributes(self.zoomimage, self.copy_attrs)
 
     def redo(self, channel, image):
+        if not self.gui_up:
+            return
         fitsimage = channel.fitsimage
         if fitsimage != self.fv.getfocus_viewer():
             return True
@@ -227,31 +255,9 @@ class Zoom(GingaPlugin.GlobalPlugin):
         self.update_zoomviewer(channel)
 
     def focus_cb(self, viewer, channel):
+        if not self.gui_up:
+            return
         self.update_zoomviewer(channel)
-
-    # Match cut-levels to the ones in the "main" image
-    def cutset_cb(self, setting, value, fitsimage):
-        if fitsimage != self.fitsimage_focus:
-            return True
-
-        loval, hival = value
-        self.zoomimage.cut_levels(loval, hival)
-        return True
-
-    def transform_cb(self, fitsimage):
-        if fitsimage != self.fitsimage_focus:
-            return True
-        flip_x, flip_y, swap_xy = fitsimage.get_transforms()
-        self.zoomimage.transform(flip_x, flip_y, swap_xy)
-        return True
-
-    def rotate_cb(self, setting, deg, fitsimage):
-        if fitsimage != self.fitsimage_focus:
-            return True
-        if not self.zoom_rotate:
-            return True
-        self.zoomimage.rotate(deg)
-        return True
 
     def _zoomset(self, fitsimage, zoomlevel):
         if fitsimage != self.fitsimage_focus:
@@ -273,6 +279,8 @@ class Zoom(GingaPlugin.GlobalPlugin):
     def zoomset_cb(self, setting, zoomlevel, fitsimage):
         """This method is called when a main FITS widget changes zoom level.
         """
+        if not self.gui_up:
+            return
         fac_x, fac_y = fitsimage.get_scale_base_xy()
         fac_x_me, fac_y_me = self.zoomimage.get_scale_base_xy()
         if (fac_x != fac_x_me) or (fac_y != fac_y_me):
@@ -285,16 +293,16 @@ class Zoom(GingaPlugin.GlobalPlugin):
 
     def set_radius(self, val):
         self.logger.debug("Setting radius to %d" % val)
-        self.zoom_radius = val
+        self.zoom_radius = int(val)
         fitsimage = self.fitsimage_focus
         if fitsimage is None:
             return True
         image = fitsimage.get_image()
         wd, ht = image.get_size()
         data_x, data_y = wd // 2, ht // 2
-        self.showxy(fitsimage, data_x, data_y)
+        self.magnify_xy(fitsimage, data_x, data_y)
 
-    def showxy(self, fitsimage, data_x, data_y):
+    def magnify_xy(self, fitsimage, data_x, data_y):
         # Cut and show zoom image in zoom window
         self.zoom_x, self.zoom_y = data_x, data_y
 
@@ -329,20 +337,42 @@ class Zoom(GingaPlugin.GlobalPlugin):
         return True
 
     def motion_cb(self, fitsimage, button, data_x, data_y):
-        # TODO: pass _canvas_ and cut from that
-        self.showxy(fitsimage, data_x, data_y)
+        if not self.gui_up:
+            return
+        self.magnify_xy(fitsimage, data_x, data_y)
+        return False
+
+    def redraw_cb(self, fitsimage, whence):
+        if not self.gui_up:
+            return
+        if self.fitsimage_focus != fitsimage:
+            return
+        self.fitsimage_focus = None
+        data_x, data_y = fitsimage.get_last_data_xy()[:2]
+        self.magnify_xy(fitsimage, data_x, data_y)
         return False
 
     def showzoom_timer_cb(self, timer):
+        if not self.gui_up:
+            return
         data = timer.data
         self.showzoom(data.image, data.data_x, data.data_y)
+
+    def _zoom_data(self, fitsimage, data, pan_pos):
+        with fitsimage.suppress_redraw:
+            self.update_time = time.time()
+            self.zoomimage.set_data(data)
+            pan_x, pan_y = pan_pos[:2]
+            self.zoomimage.panset_xy(pan_x, pan_y)
 
     def showzoom(self, image, data_x, data_y):
         # cut out detail area and set the zoom image
         data, x1, y1, x2, y2 = image.cutout_radius(int(data_x), int(data_y),
                                                    self.zoom_radius)
-        self.update_time = time.time()
-        self.fv.gui_do(self.zoomimage.set_data, data)
+        # pan to the exact position of the center of the cutout
+        pan_pos = (data_x - x1, data_y - y1)
+
+        self.fv.gui_do(self._zoom_data, self.zoomimage, data, pan_pos)
 
     def set_amount_cb(self, widget, val):
         """This method is called when 'Zoom Amount' control is adjusted.
@@ -374,6 +404,10 @@ class Zoom(GingaPlugin.GlobalPlugin):
         self.refresh_interval = val / 1000.0
         self.logger.debug("Setting refresh time to %.4f sec" % (
             self.refresh_interval))
+
+    def close(self):
+        self.fv.stop_global_plugin(str(self))
+        return True
 
     def __str__(self):
         return 'zoom'

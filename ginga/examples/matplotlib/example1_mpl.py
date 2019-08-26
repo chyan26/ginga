@@ -10,17 +10,16 @@
 Usage:
    example1_mpl.py [fits file]
 """
-from __future__ import print_function
 
 import sys
 
 from matplotlib.figure import Figure
 
-from ginga import AstroImage
 from ginga.qtw.QtHelp import QtGui, QtCore
 from ginga.mplw.ImageViewCanvasMpl import ImageViewCanvas
 from ginga.mplw.FigureCanvasQt import FigureCanvas
 from ginga.misc import log
+from ginga.util.loader import load_data
 
 
 class FitsViewer(QtGui.QMainWindow):
@@ -35,11 +34,12 @@ class FitsViewer(QtGui.QMainWindow):
         fi = ImageViewCanvas(logger=self.logger)
         fi.enable_autocuts('on')
         fi.set_autocut_params('zscale')
+        fi.enable_auto_orient(True)
         fi.enable_autozoom('on')
         #fi.set_callback('drag-drop', self.drop_file)
         fi.set_callback('none-move', self.motion)
         fi.set_bg(0.2, 0.2, 0.2)
-        fi.ui_setActive(True)
+        fi.ui_set_active(True)
         fi.set_figure(fig)
         self.fitsimage = fi
 
@@ -81,9 +81,7 @@ class FitsViewer(QtGui.QMainWindow):
         return self.fitsimage
 
     def load_file(self, filepath):
-        image = AstroImage.AstroImage(logger=self.logger)
-        image.load_file(filepath)
-
+        image = load_data(filepath, logger=self.logger)
         self.fitsimage.set_image(image)
 
     def open_file(self):
@@ -153,28 +151,21 @@ def main(options, args):
 
 if __name__ == "__main__":
 
-    # Parse command line options with nifty optparse module
-    from optparse import OptionParser
+    # Parse command line options
+    from argparse import ArgumentParser
 
-    usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage, version=('%%prog'))
+    usage = "usage: %prog [options] [args]"
+    argprs = ArgumentParser(usage=usage)
 
-    optprs.add_option("--debug", dest="debug", default=False,
-                      action="store_true",
-                      help="Enter the pdb debugger on main()")
-    optprs.add_option("--log", dest="logfile", metavar="FILE",
-                      help="Write logging output to FILE")
-    optprs.add_option("--loglevel", dest="loglevel", metavar="LEVEL",
-                      type='int', default=None,
-                      help="Set logging level to LEVEL")
-    optprs.add_option("--stderr", dest="logstderr", default=False,
-                      action="store_true",
-                      help="Copy logging also to stderr")
-    optprs.add_option("--profile", dest="profile", action="store_true",
-                      default=False,
-                      help="Run the profiler on main()")
+    argprs.add_argument("--debug", dest="debug", default=False,
+                        action="store_true",
+                        help="Enter the pdb debugger on main()")
+    argprs.add_argument("--profile", dest="profile", action="store_true",
+                        default=False,
+                        help="Run the profiler on main()")
+    log.addlogopts(argprs)
 
-    (options, args) = optprs.parse_args(sys.argv[1:])
+    (options, args) = argprs.parse_known_args(sys.argv[1:])
 
     # Are we debugging this?
     if options.debug:

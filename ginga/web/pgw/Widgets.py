@@ -12,8 +12,6 @@ from functools import reduce
 
 from ginga.misc import Callback, Bunch, LineHistory
 from ginga.web.pgw import PgHelp
-from ginga.util import six
-from ginga.util.six.moves import filter
 
 # For future support of WebView widget
 has_webkit = False
@@ -221,7 +219,7 @@ class TextEntry(WidgetBase):
         self.editable = tf
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.font = font
 
@@ -280,7 +278,7 @@ class TextEntrySet(WidgetBase):
         app.do_operation('update_value', id=self.id, value=text)
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.font = font
 
@@ -356,7 +354,7 @@ class TextArea(WidgetBase):
         self.editable = tf
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.font = font
 
@@ -404,7 +402,7 @@ class Label(WidgetBase):
         app.do_operation('update_label', id=self.id, value=text)
 
     def set_font(self, font, size=10):
-        if isinstance(font, six.string_types):
+        if isinstance(font, str):
             font = self.get_font(font, size)
         self.font = font
         self.add_css_styles([('font-family', font.family),
@@ -509,9 +507,16 @@ class ComboBox(WidgetBase):
     def clear(self):
         self.choices = []
 
-    def show_text(self, text):
+    def set_text(self, text):
         index = self.choices.index(text)
         self.set_index(index)
+
+    # to be deprecated someday
+    show_text = set_text
+
+    def get_text(self):
+        idx = self.get_index()
+        return self.choices[idx]
 
     def append_text(self, text):
         self.choices.append(text)
@@ -611,7 +616,7 @@ class Slider(WidgetBase):
        orient="%(orient)s">
     '''
 
-    def __init__(self, orientation='horizontal', track=False, dtype=int):
+    def __init__(self, orientation='horizontal', dtype=int, track=False):
         super(Slider, self).__init__()
 
         self.orientation = orientation
@@ -702,10 +707,10 @@ class ScrollBar(WidgetBase):
                  classes=self.get_css_classes(fmt='str'),
                  styles=self.get_css_styles(fmt='str'))
         if self.orientation == 'vertical':
-            d['vert'] = 'true'
+            d['vert'] = 'false'
             d['width'], d['height'] = self.thickness, "'100%'"
         else:
-            d['vert'] = 'false'
+            d['vert'] = 'true'
             d['width'], d['height'] = "'100%'", self.thickness
 
         return self.html_template % d
@@ -1312,8 +1317,9 @@ class Canvas(WidgetBase):
     canvas_template = '''
     <canvas id="%(id)s" tabindex="%(tab_idx)d"
        class="%(classes)s" style="%(styles)s"
-       width="%(width)s" height="%(height)s">Your browser does not appear to
-support HTML5 canvas.</canvas>
+       width="%(width)s" height="%(height)s"
+       minWidth=1 minHeight=1>
+       Your browser does not appear to support HTML5 canvas.</canvas>
     <script type="text/javascript">
         ginga_initialize_canvas(document.getElementById("%(id)s"), "%(id)s",
                                   ginga_app);
@@ -1327,7 +1333,6 @@ support HTML5 canvas.</canvas>
         self.width = width
         self.height = height
         self.name = ''
-        self.timers = {}
 
     def _cb_redirect(self, event):
         pass
@@ -1345,15 +1350,6 @@ support HTML5 canvas.</canvas>
         img_src = PgHelp.get_image_src_from_buffer(img_buf)
 
         self._draw("image", x=x, y=y, src=img_src, width=width, height=height)
-
-    def add_timer(self, name, cb_fn):
-        app = self.get_app()
-        timer = app.add_timer(cb_fn)
-        self.timers[name] = timer
-
-    def reset_timer(self, name, time_sec):
-        app = self.get_app()
-        app.reset_timer(self.timers[name], time_sec)
 
     def render(self):
         global tab_idx
@@ -1376,17 +1372,21 @@ class ContainerBase(WidgetBase):
         # TODO: probably need to maintain children as list of widget ids
         self.children = []
 
+        for name in ['widget-added', 'widget-removed']:
+            self.enable_callback(name)
+
     def add_ref(self, ref):
         # TODO: should this be a weakref?
         self.children.append(ref)
 
-    def remove(self, w, delete=False):
-        if w not in self.children:
+    def remove(self, child, delete=False):
+        if child not in self.children:
             raise KeyError("Widget is not a child of this container")
-        self.children.remove(w)
+        self.children.remove(child)
 
         app = self.get_app()
         app.do_operation('update_html', id=self.id, value=self.render())
+        self.make_callback('widget-removed', child)
 
     def remove_all(self):
         self.children[:] = []
@@ -1396,6 +1396,9 @@ class ContainerBase(WidgetBase):
 
     def get_children(self):
         return self.children
+
+    def num_children(self):
+        return len(self.children)
 
     def render(self):
         return self.render_children()
@@ -1448,6 +1451,7 @@ class Box(ContainerBase):
 
         app = self.get_app()
         app.do_operation('update_html', id=self.id, value=self.render())
+        self.make_callback('widget-added', child)
 
     def set_spacing(self, val):
         self.spacing = val
@@ -1617,6 +1621,7 @@ class TabWidget(ContainerBase):
         # this is a hack--we really don't want to reload the page, but just
         # re-rendering the HTML does not seem to process the CSS right
         #app.do_operation('reload_page', id=self.id)
+        self.make_callback('widget-added', child)
 
     def get_index(self):
         return self.index
@@ -1739,7 +1744,7 @@ class Splitter(ContainerBase):
     </div>
     <script type="text/javascript">
         $(document).ready(function () {
-            $('#%(id)s').jqxSplitter({ width: '100%', height: '100%',
+            $('#%(id)s').jqxSplitter({ width: '100%%', height: '100%%',
                                        orientation: '%(orient)s',
                                        disabled: %(disabled)s,
                                        panels: %(sizes)s
@@ -1750,7 +1755,7 @@ class Splitter(ContainerBase):
                      var panel = event.args.panels[i];
                      sizes.push(panel.size);
                  }
-                 ginga_app.widget_handler('activate', '%(id)s', sizes); });
+                 ginga_app.widget_handler('activate', '%(id)s', sizes);
             });
         });
     </script>
@@ -1767,6 +1772,7 @@ class Splitter(ContainerBase):
 
     def add_widget(self, child):
         self.add_ref(child)
+        self.make_callback('widget-added', child)
 
     def get_sizes(self):
         return self.sizes
@@ -1842,6 +1848,7 @@ class GridBox(ContainerBase):
         app = self.get_app()
         app.do_operation('update_html', id=self.id,
                          value=self.render_body())
+        self.make_callback('widget-added', child)
 
     def render_body(self):
         res = []
@@ -1920,6 +1927,7 @@ class Toolbar(ContainerBase):
 
     def add_widget(self, child):
         self.add_ref(child)
+        self.make_callback('widget-added', child)
 
     def add_menu(self, text, menu=None, mtype='tool'):
         if menu is None:
@@ -1986,7 +1994,7 @@ class Menu(ContainerBase):
     </div>
     <script type="text/javascript">
         $(document).ready(function () {
-            $("#%(id)s").jqxMenu({ width: '%(width)s', height: '%(height)s',
+            $("#%(id)s").jqxMenu({
                                    mode: 'popup', disabled: %(disabled)s });
             $('#%(id)s').on('itemclick', function (event) {
                 // get the clicked LI element.
@@ -2015,6 +2023,7 @@ class Menu(ContainerBase):
 
     def add_widget(self, child):
         self.add_ref(child)
+        self.make_callback('widget-added', child)
 
     def add_name(self, name, checkable=False):
         child = MenuAction(text=name, checkable=checkable)
@@ -2056,7 +2065,6 @@ class Menu(ContainerBase):
 
         if self.widget is not None:
             return self.html_template1 % d
-
         return self.html_template2 % d
 
 
@@ -2095,6 +2103,7 @@ class Menubar(ContainerBase):
         child.widget = self
         self.menus[name] = child
         self.add_ref(child)
+        self.make_callback('widget-added', child)
         return child
 
     def add_name(self, name):
@@ -2181,6 +2190,7 @@ class TopLevel(ContainerBase):
         app = self.get_app()
         app.do_operation('update_html', id=self.id,
                          value=self.render_children())
+        self.make_callback('widget-added', child)
 
     def show(self):
         pass
@@ -2307,8 +2317,7 @@ class Application(Callback.Callbacks):
         widget_dict[0] = self
 
         self._timer_lock = threading.RLock()
-        self._timer_cnt = 0
-        self._timer = {}
+        self._timers = []
 
         self.host = host
         self.port = port
@@ -2389,44 +2398,38 @@ class Application(Callback.Callbacks):
         if len(bad_handlers) > 0:
             with self._timer_lock:
                 for handler in bad_handlers:
-                    self.ws_handlers.remove(handler)
+                    if handler in self.ws_handlers:
+                        self.ws_handlers.remove(handler)
 
     def on_timer_event(self, event):
+        """internal event handler for timer events"""
         # self.logger.debug("timer update")
-        funcs = []
         with self._timer_lock:
-            for key, bnch in self._timer.items():
-                if (bnch.timer is not None) and \
-                   (time.time() > bnch.timer):
-                    bnch.timer = None
-                    funcs.append(bnch.func)
+            expired = [timer for timer in self._timers
+                       if (timer.deadline is not None and
+                           time.time() > timer.deadline)]
 
-        for func in funcs:
-            try:
-                func()
-            except Exception as e:
-                pass
+        for timer in expired:
+            timer.expire()
             # self.logger.debug("update should have been called.")
 
-    def add_timer(self, func):
+    def add_timer(self, timer):
+        """internal method for timer management; see Timer class in PgHelp"""
         with self._timer_lock:
-            name = self._timer_cnt
-            self._timer_cnt += 1
-            timer = Bunch.Bunch(timer=None, func=func, name=name)
-            self._timer[name] = timer
-            return timer
+            if timer not in self._timers:
+                self._timers.append(timer)
 
     def remove_timer(self, timer):
+        """internal method for timer management; see Timer class in PgHelp"""
         with self._timer_lock:
-            name = timer.name
-            del self._timer[name]
+            if timer in self._timers:
+                self._timers.remove(timer)
 
-    def reset_timer(self, timer, time_sec):
-        with self._timer_lock:
-            # self.logger.debug("setting timer...")
-            timer.timer = time.time() + time_sec
+    def make_timer(self):
+        return PgHelp.Timer(app=self)
 
     def widget_event(self, event):
+        """internal method for event management"""
         if event.type == 'timer':
             self.on_timer_event(event)
             return
@@ -2493,6 +2496,9 @@ class Application(Callback.Callbacks):
     def mainloop(self, no_ioloop=False):
         self.start(no_ioloop=no_ioloop)
 
+    def quit(self):
+        self.stop()
+
 
 class Dialog(ContainerBase):
 
@@ -2508,8 +2514,9 @@ class Dialog(ContainerBase):
                 title: "%(title)s",
                 closeOnEscape: false,
                 position: { x: 50, y: 50},
-                draggable: true,
+                draggable: true, resizeable: true,
                 minWidth: 'auto', minHeight: 'auto',
+                width: 'auto', height: 'auto',
                 maxWidth: '100%%', maxHeight: '100%%',
             });
             // otherwise we get scrollbars in the dialog
@@ -2519,12 +2526,18 @@ class Dialog(ContainerBase):
                 ginga_app.widget_handler('dialog-close', '%(id)s', true);
             });
 
+            var resize_timer;
             $('#%(id)s').on("dialogresize", function (event, ui) {
+                event.preventDefault()
+                clearTimeout(resize_timer);
+                resize_timer = setTimeout(function () {
                 var payload = { width: ui.size.width,
                                 height: ui.size.height,
                                 x: ui.position.left,
                                 y: ui.position.top }
+                ginga_app.resize_window();
                 ginga_app.widget_handler('dialog-resize', '%(id)s', payload);
+                }, 250);
             });
 
             // $('#%(id)s').on("dialogfocus", function (event, ui) {
@@ -2532,6 +2545,7 @@ class Dialog(ContainerBase):
             // });
 
             $('#%(id)s').on("dialogopen", function (event, ui) {
+                ginga_app.resize_window();
                 ginga_app.widget_handler('dialog-open', '%(id)s', true);
             });
 
@@ -2709,12 +2723,20 @@ def make_widget(title, wtype):
 
 
 def hadjust(w, orientation):
+    """Ostensibly, a function to reduce the vertical footprint of a widget
+    that is normally used in a vertical stack (usually a Splitter), when it
+    is instead used in a horizontal orientation.
+    """
     if orientation != 'horizontal':
         return w
-    vbox = VBox()
-    vbox.add_widget(w)
-    vbox.add_widget(Label(''), stretch=1)
-    return vbox
+    # This currently does not seem to be needed for most plugins that are
+    # coded to flow either vertically or horizontally and, in fact, reduces
+    # the visual asthetic somewhat.
+    ## spl = Splitter(orientation='vertical')
+    ## spl.add_widget(w)
+    ## spl.add_widget(Label(''))
+    ## return spl
+    return w
 
 
 def build_info(captions, orientation='vertical'):

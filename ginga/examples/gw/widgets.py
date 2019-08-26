@@ -10,7 +10,6 @@ Examples:
   $ python widgets.py gtk3 label
   $ python widgets.py pg button
 """
-
 import sys
 import os
 
@@ -46,7 +45,8 @@ def popup_dialog(parent):
 logger = log.get_logger('test', log_stderr=True, level=20)
 
 app = Widgets.Application(logger=logger)
-app.script_imports.append('jqx')
+if hasattr(app, 'script_imports'):
+    app.script_imports.append('jqx')
 app.add_callback('shutdown', quit)
 top = app.make_window("Ginga Wrapped Widgets Example: %s" % (wname))
 top.add_callback('close', quit)
@@ -177,7 +177,7 @@ elif wname == 'vbox':
     vbox.add_widget(w)
 
 elif wname == 'splitter':
-    w = Widgets.Splitter()
+    w = Widgets.Splitter(orientation='horizontal')
     w.add_widget(Widgets.Label('Content of Pane 1'))
     w.add_widget(Widgets.Label('Content of Pane 2'))
     vbox.add_widget(w, stretch=1)

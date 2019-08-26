@@ -14,6 +14,10 @@ REQUIREMENTS:
      $ pip install ipyevents
      $ jupyter nbextension enable --py --sys-prefix ipyevents
 
+  or via conda:
+
+     $ conda install -c conda-forge ipyevents
+
 Basic usage in a Jupyter notebook:
 
 import ipywidgets as widgets
@@ -97,8 +101,8 @@ class ImageViewJpw(ImageView):
 
     def update_image(self):
         fmt = self.jp_img.format
-        web_img = self.get_rgb_image_as_bytes(format=fmt)
-
+        web_img = self.renderer.get_surface_as_rgb_format_bytes(
+            format=fmt)
         # this updates the model, and then the Jupyter image(s)
         self.jp_img.value = web_img
 
@@ -130,9 +134,6 @@ class ImageViewEvent(ImageViewJpw):
     def __init__(self, logger=None, rgbmap=None, settings=None):
         ImageViewJpw.__init__(self, logger=logger, rgbmap=rgbmap,
                               settings=settings)
-
-        # Does widget accept focus when mouse enters window
-        self.enter_focus = self.t_.get('enter_focus', True)
 
         self._button = 0
 
@@ -241,17 +242,15 @@ class ImageViewEvent(ImageViewJpw):
             res = self._keytbl2.get(keyname, keyname)
         return res
 
-    def get_keyTable(self):
+    def get_key_table(self):
         return self._keytbl
-
-    def set_enter_focus(self, tf):
-        self.enter_focus = tf
 
     def focus_event(self, event, has_focus):
         return self.make_callback('focus', has_focus)
 
     def enter_notify_event(self, event):
-        if self.enter_focus:
+        enter_focus = self.t_.get('enter_focus', False)
+        if enter_focus:
             # TODO: set focus on canvas
             pass
         return self.make_callback('enter')
@@ -271,7 +270,7 @@ class ImageViewEvent(ImageViewJpw):
         return self.make_ui_callback('key-release', keyname)
 
     def button_press_event(self, event):
-        x, y = event['arrayX'], event['arrayY']
+        x, y = event['dataX'], event['dataY']
         self.last_win_x, self.last_win_y = x, y
 
         button = 0
@@ -284,7 +283,7 @@ class ImageViewEvent(ImageViewJpw):
         return self.make_ui_callback('button-press', button, data_x, data_y)
 
     def button_release_event(self, event):
-        x, y = event['arrayX'], event['arrayY']
+        x, y = event['dataX'], event['dataY']
         self.last_win_x, self.last_win_y = x, y
 
         button = 0
@@ -298,7 +297,7 @@ class ImageViewEvent(ImageViewJpw):
 
     def motion_notify_event(self, event):
         button = self._button
-        x, y = event['arrayX'], event['arrayY']
+        x, y = event['dataX'], event['dataY']
         self.last_win_x, self.last_win_y = x, y
 
         self.logger.debug("motion event at %dx%d, button=%x" % (x, y, button))
@@ -308,7 +307,7 @@ class ImageViewEvent(ImageViewJpw):
         return self.make_ui_callback('motion', button, data_x, data_y)
 
     def scroll_event(self, event):
-        x, y = event['arrayX'], event['arrayY']
+        x, y = event['dataX'], event['dataY']
         self.last_win_x, self.last_win_y = x, y
         dx, dy = event['deltaX'], event['deltaY']
 
@@ -319,7 +318,8 @@ class ImageViewEvent(ImageViewJpw):
             self.make_ui_callback('pan', 'move', -dx, -dy)
             return self.make_ui_callback('pan', 'stop', 0, 0)
 
-        # <= This code path should not be followed
+        # <= This code path should not be followed under normal
+        # circumstances.
         # we leave it here in case we want to make the scroll
         # callback configurable in the future
 

@@ -24,7 +24,7 @@ This module lets us access the video stream of a video file frame-by-frame.
 
 Usage::
 
-    $ example1_video.py [log options] <video file>
+    $ example1_video.py [log options] --optimize <video file>
 
 Workings:
 
@@ -33,7 +33,6 @@ read frames from the file.  This allows the viewer to remain fairly
 responsive to user actions.
 
 """
-from __future__ import print_function
 
 import sys
 import time
@@ -53,6 +52,7 @@ except ImportError:
     sys.exit(1)
 
 from ginga import trcalc
+# this should be the default if OpenCv is installed anyway
 trcalc.use('opencv')
 
 STD_FORMAT = '%(asctime)s | %(levelname)1.1s | %(filename)s:%(lineno)d (%(funcName)s) | %(message)s'
@@ -91,17 +91,14 @@ class GingaVision(object):
 
         fi = Viewers.CanvasView(logger=logger)
         fi.set_autocut_params('histogram')
-        fi.enable_autozoom('once')
+        fi.enable_autozoom('off')
         fi.enable_autocenter('once')
         fi.enable_autocuts('off')
         fi.cut_levels(0, 255)
+        fi.scale_to(1, 1)
         fi.set_bg(0.2, 0.2, 0.2)
         fi.ui_set_active(True)
         self.viewer = fi
-
-        # these options are needed for correct panning with this type of image
-        fi._invert_y = False
-        fi.origin_upper = False
 
         if options.optimize:
             # Some optimizations to smooth playback at decent FPS
@@ -276,30 +273,31 @@ def main(options, args):
 
 
 if __name__ == '__main__':
-    # Parse command line options with nifty optparse module
-    from optparse import OptionParser
 
-    usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage, version=('%%prog'))
+    # Parse command line options
+    from argparse import ArgumentParser
 
-    optprs.add_option("--debug", dest="debug", default=False,
-                      action="store_true",
-                      help="Enter the pdb debugger on main()")
-    optprs.add_option("--fps", dest="fps", metavar="FPS",
-                      type='float', default=None,
-                      help="Force a FPS (frames/sec)")
-    optprs.add_option("--optimize", dest="optimize", default=False,
-                      action="store_true",
-                      help="Perform some optimizations to improve FPS")
-    optprs.add_option("-t", "--toolkit", dest="toolkit", metavar="NAME",
-                      default='qt',
-                      help="Choose GUI toolkit (gtk|qt)")
-    optprs.add_option("--profile", dest="profile", action="store_true",
-                      default=False,
-                      help="Run the profiler on main()")
-    log.addlogopts(optprs)
+    usage = "usage: %prog [options] [args]"
+    argprs = ArgumentParser(usage=usage)
 
-    (options, args) = optprs.parse_args(sys.argv[1:])
+    argprs.add_argument("--debug", dest="debug", default=False,
+                        action="store_true",
+                        help="Enter the pdb debugger on main()")
+    argprs.add_argument("--fps", dest="fps", metavar="FPS",
+                        type=float, default=None,
+                        help="Force a FPS (frames/sec)")
+    argprs.add_argument("--optimize", dest="optimize", default=False,
+                        action="store_true",
+                        help="Perform some optimizations to improve FPS")
+    argprs.add_argument("-t", "--toolkit", dest="toolkit", metavar="NAME",
+                        default='qt',
+                        help="Choose GUI toolkit (gtk|qt)")
+    argprs.add_argument("--profile", dest="profile", action="store_true",
+                        default=False,
+                        help="Run the profiler on main()")
+    log.addlogopts(argprs)
+
+    (options, args) = argprs.parse_known_args(sys.argv[1:])
 
     # Are we debugging this?
     if options.debug:

@@ -6,7 +6,7 @@
 #
 from ginga.canvas.CanvasObject import (CanvasObjectBase, _bool, _color,
                                        register_canvas_types,
-                                       colors_plus_none)
+                                       colors_plus_none, coord_names)
 from .basic import Rectangle
 from ginga.misc.ParamSet import Param
 
@@ -87,18 +87,24 @@ class ColorBar(CanvasObjectBase):
         # Calculate reasonable spacing for range numbers
         cr.set_font(self.font, self.fontsize, color=self.color,
                     alpha=self.alpha)
-        text = "%.4g" % (hival)
-        txt_wd, txt_ht = cr.text_extents(text)
+        hitxt = "%.4g" % (hival)
+        lotxt = "%.4g" % (loval)
+        txt_wdh, txt_hth = cr.text_extents(hitxt)
+        txt_wdl, txt_htl = cr.text_extents(lotxt)
+        txt_wd = max(txt_wdh, txt_wdl)
         avg_pixels_per_range_num = self.t_spacing + txt_wd
         scale_ht = 0
         if self.showrange:
-            scale_ht = txt_ht + self.tick_ht + 2
+            scale_ht = txt_hth + self.tick_ht + 2
 
         pxwd, pxht = width, max(self.height, scale_ht)
 
+        maxc = max(rgbmap.maxc + 1, 256)
+        maxf = float(maxc)
+
         # calculate intervals for range numbers
         nums = max(int(pxwd // avg_pixels_per_range_num), 1)
-        spacing = 256 // nums
+        spacing = maxc // nums
         start = spacing // 2
         _interval = {start + i * spacing: True for i in range(0, nums - 1)}
         ## self.logger.debug("nums=%d spacing=%d intervals=%s" % (
@@ -110,10 +116,10 @@ class ColorBar(CanvasObjectBase):
         y_top = y_base + self.height
 
         x2 = pxwd
-        clr_wd = pxwd // 256
-        rem_px = x2 - (clr_wd * 256)
+        clr_wd = pxwd // maxc
+        rem_px = x2 - (clr_wd * maxc)
         if rem_px > 0:
-            ival = 256 // rem_px
+            ival = maxc // rem_px
         else:
             ival = 0
         clr_ht = pxht - scale_ht
@@ -123,7 +129,7 @@ class ColorBar(CanvasObjectBase):
         j = ival
         off = 0
         range_pts = []
-        for i in range(256):
+        for i in range(maxc):
 
             wd = clr_wd
             if rem_px > 0:
@@ -135,7 +141,7 @@ class ColorBar(CanvasObjectBase):
             x = off
 
             (r, g, b) = rgbmap.get_rgbval(i)
-            color = (r / 255., g / 255., b / 255.)
+            color = (r / maxf, g / maxf, b / maxf)
 
             cr.set_line(color, linewidth=0)
             cr.set_fill(color, alpha=self.fillalpha)
@@ -172,7 +178,6 @@ class ColorBar(CanvasObjectBase):
             cr.draw_polygon(cp)
 
             cr.set_line(color=self.color, linewidth=1, alpha=self.alpha)
-            #cr.draw_line(cx1, cy1, cx2, cy1)
             cr.draw_line(cp[0][0], cp[0][1], cp[1][0], cp[1][1])
 
             cr.set_font(self.font, self.fontsize, color=self.color,
@@ -180,10 +185,8 @@ class ColorBar(CanvasObjectBase):
             for (cx, cy, cyy, text) in range_pts:
                 cp = tr.to_(((cx, cy), (cx, cy + self.tick_ht), (cx, cyy - 2)))
                 # tick
-                #cr.draw_line(cx, cy, cx, cy+self.tick_ht)
                 cr.draw_line(cp[0][0], cp[0][1], cp[1][0], cp[1][1])
                 # number
-                #cr.draw_text(cx, cyy-2, text)
                 cr.draw_text(cp[2][0], cp[2][1], text)
 
         # draw optional border
@@ -199,6 +202,9 @@ class DrawableColorBar(Rectangle):
     @classmethod
     def get_params_metadata(cls):
         return [
+            Param(name='coord', type=str, default='data',
+                  valid=coord_names,
+                  description="Set type of coordinates"),
             Param(name='x1', type=float, default=0.0, argpos=0,
                   description="First X coordinate of object"),
             Param(name='y1', type=float, default=0.0, argpos=1,
@@ -274,29 +280,35 @@ class DrawableColorBar(Rectangle):
         # Calculate reasonable spacing for range numbers
         cr.set_font(self.font, self.fontsize, color=self.color,
                     alpha=self.alpha)
-        text = "%.4g" % (hival)
-        txt_wd, txt_ht = cr.text_extents(text)
+        hitxt = "%.4g" % (hival)
+        lotxt = "%.4g" % (loval)
+        txt_wdh, txt_hth = cr.text_extents(hitxt)
+        txt_wdl, txt_htl = cr.text_extents(lotxt)
+        txt_wd = max(txt_wdh, txt_wdl)
         avg_pixels_per_range_num = self.t_spacing + txt_wd
         scale_ht = 0
         if self.showrange:
-            scale_ht = txt_ht + self.tick_ht + 2
+            scale_ht = txt_hth + self.tick_ht + 2
 
         pxwd, pxht = width, max(height, scale_ht)
         pxwd, pxht = max(pxwd, 1), max(pxht, 1)
 
+        maxc = max(rgbmap.maxc + 1, 256)
+        maxf = float(maxc)
+
         # calculate intervals for range numbers
         nums = max(int(pxwd // avg_pixels_per_range_num), 1)
-        spacing = 256 // nums
+        spacing = maxc // nums
         start = spacing // 2
         _interval = {start + i * spacing: True for i in range(0, nums - 1)}
 
         x_base, y_base, x_top, y_top = cx1, cy1, cx2, cy2
 
         x2 = pxwd
-        clr_wd = pxwd // 256
-        rem_px = x2 - (clr_wd * 256)
+        clr_wd = pxwd // maxc
+        rem_px = x2 - (clr_wd * maxc)
         if rem_px > 0:
-            ival = 256 // rem_px
+            ival = maxc // rem_px
         else:
             ival = 0
         clr_ht = pxht - scale_ht
@@ -306,7 +318,7 @@ class DrawableColorBar(Rectangle):
         j = ival
         off = cx1
         range_pts = []
-        for i in range(256):
+        for i in range(maxc):
 
             wd = clr_wd
             if rem_px > 0:
@@ -318,7 +330,7 @@ class DrawableColorBar(Rectangle):
             x = off
 
             (r, g, b) = rgbmap.get_rgbval(i)
-            color = (r / 255., g / 255., b / 255.)
+            color = (r / maxf, g / maxf, b / maxf)
 
             cr.set_line(color, linewidth=0)
             cr.set_fill(color, alpha=self.fillalpha)
@@ -354,7 +366,6 @@ class DrawableColorBar(Rectangle):
             cr.draw_polygon(cp)
 
             cr.set_line(color=self.color, linewidth=1, alpha=self.alpha)
-            #cr.draw_line(cx1, cy1, cx2, cy1)
             cr.draw_line(cp[0][0], cp[0][1], cp[1][0], cp[1][1])
 
             cr.set_font(self.font, self.fontsize, color=self.color,
@@ -362,10 +373,8 @@ class DrawableColorBar(Rectangle):
             for (cx, cy, cyy, text) in range_pts:
                 cp = tr.to_(((cx, cy), (cx, cy + self.tick_ht), (cx, cyy - 2)))
                 # tick
-                #cr.draw_line(cx, cy, cx, cy+self.tick_ht)
                 cr.draw_line(cp[0][0], cp[0][1], cp[1][0], cp[1][1])
                 # number
-                #cr.draw_text(cx, cyy-2, text)
                 cr.draw_text(cp[2][0], cp[2][1], text)
 
         # draw optional border
@@ -421,6 +430,7 @@ class ModeIndicator(CanvasObjectBase):
         self.kind = 'modeindicator'
         self.xpad = 8
         self.ypad = 4
+        self.modetbl = dict(locked='L', softlock='S', held='H', oneshot='O')
 
     def draw(self, viewer):
 
@@ -435,14 +445,13 @@ class ModeIndicator(CanvasObjectBase):
         cr = viewer.renderer.setup_cr(self)
         tr = viewer.tform['window_to_native']
 
-        if mode_type == 'locked':
-            text = '%s [L]' % (mode)
-        elif mode_type == 'softlock':
-            text = '%s [SL]' % (mode)
-        else:
-            text = mode
+        text = mode
+        if mode_type in self.modetbl:
+            text += ' [%s]' % self.modetbl[mode_type]
 
-        cr.set_font(self.font, self.fontsize, color=self.color,
+        color = 'cyan' if mode == 'meta' else self.color
+
+        cr.set_font(self.font, self.fontsize, color=color,
                     alpha=self.alpha)
         txt_wd, txt_ht = cr.text_extents(text)
 
@@ -465,7 +474,7 @@ class ModeIndicator(CanvasObjectBase):
                                 (cx2, cy2), (cx1, cy2))))
 
         # draw fg
-        cr.set_line(color=self.color, linewidth=1, alpha=self.alpha)
+        cr.set_line(color=color, linewidth=1, alpha=self.alpha)
 
         cx, cy = x_base + self.xpad, y_base + txt_ht + self.ypad
         cx, cy = tr.to_((cx, cy))
@@ -475,7 +484,7 @@ class ModeIndicator(CanvasObjectBase):
 class FocusIndicator(CanvasObjectBase):
     """
     Shows an indicator that the canvas has the keyboard/mouse focus.
-    This is shown by a dotted rectangle around the perimeter of the window.
+    This is shown by a rectangle around the perimeter of the window.
 
     NOTE: to get this to work properly, you need to add a callback to your
     viewer like so:

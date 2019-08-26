@@ -5,6 +5,7 @@
 # Please see the file LICENSE.txt for details.
 
 import os
+import numpy as np
 
 from ginga.gtk3w import GtkHelp
 from ginga import Mixins, Bindings
@@ -55,7 +56,7 @@ class ImageViewGtk(ImageView):
         return self.imgwin
 
     def get_plain_image_as_pixbuf(self):
-        arr = self.getwin_array(order='RGB')
+        arr = self.getwin_array(order='RGB', dtype=np.uint8)
         pixbuf = GtkHelp.pixbuf_new_from_array(arr,
                                                GdkPixbuf.Colorspace.RGB,
                                                8)
@@ -83,9 +84,9 @@ class ImageViewGtk(ImageView):
         pixbuf.savev(filepath, format, options, values)
 
     def get_rgb_image_as_pixbuf(self):
-        dawd = self.surface.get_width()
-        daht = self.surface.get_height()
-        rgb_buf = bytes(self.surface.get_data())
+        arr8 = self.renderer.get_surface_as_array(order='RGB')
+        daht, dawd = arr8.shape[:2]
+        rgb_buf = arr8.tobytes(order='C')
         pixbuf = GtkHelp.pixbuf_new_from_data(rgb_buf, GdkPixbuf.Colorspace.RGB,
                                               False, 8, dawd, daht, dawd * 3)
 
@@ -93,18 +94,43 @@ class ImageViewGtk(ImageView):
 
     def save_rgb_image_as_file(self, filepath, format='png', quality=90):
         pixbuf = self.get_rgb_image_as_pixbuf()
-        options = {}
+        options, values = [], []
         if format == 'jpeg':
-            options['quality'] = str(quality)
-        pixbuf.save(filepath, format, options)
+            options.append('quality')
+            values.append(str(quality))
+        pixbuf.savev(filepath, format, options, values)
 
     def reschedule_redraw(self, time_sec):
         self._defer_task.stop()
         self._defer_task.start(time_sec)
 
+    def _renderer_to_surface(self):
+
+        if isinstance(self.renderer.surface, cairo.ImageSurface):
+            # optimization when renderer is cairo:
+            # the render already contains a surface we can copy from
+            self.surface = self.renderer.surface
+
+        else:
+            # create a new surface from rendered array
+            arr = self.renderer.get_surface_as_array(order=self.rgb_order)
+            arr = np.ascontiguousarray(arr)
+
+            daht, dawd, depth = arr.shape
+            self.logger.debug("arr shape is %dx%dx%d" % (dawd, daht, depth))
+
+            stride = cairo.ImageSurface.format_stride_for_width(cairo.FORMAT_ARGB32,
+                                                                dawd)
+            self.surface = cairo.ImageSurface.create_for_data(arr,
+                                                              cairo.FORMAT_ARGB32,
+                                                              dawd, daht, stride)
+
     def update_image(self):
-        if not self.surface:
+        if self.surface is None:
+            # window is not mapped/configured yet
             return
+
+        self._renderer_to_surface()
 
         win = self.imgwin.get_window()
         if win is not None and self.surface is not None:
@@ -183,15 +209,14 @@ class ImageViewGtk(ImageView):
     def make_timer(self):
         return GtkHelp.Timer()
 
-    def _get_rgbbuf(self, data):
-        buf = data.tostring(order='C')
-        return buf
-
     def onscreen_message(self, text, delay=None, redraw=True):
         self.msgtask.stop()
         self.set_onscreen_message(text, redraw=redraw)
         if delay is not None:
             self.msgtask.start(delay)
+
+    def take_focus(self):
+        self.imgwin.grab_focus()
 
 
 class ImageViewEvent(ImageViewGtk):
@@ -228,16 +253,16 @@ class ImageViewEvent(ImageViewGtk):
                           Gdk.EventMask.SCROLL_MASK)
 
         # Set up widget as a drag and drop destination
+        targets = Gtk.TargetList.new([])
+        targets.add_text_targets(GtkHelp.DND_TARGET_TYPE_TEXT)
+        targets.add_uri_targets(GtkHelp.DND_TARGET_TYPE_URIS)
+        imgwin.drag_dest_set(Gtk.DestDefaults.ALL, [],
+                             Gdk.DragAction.COPY)
+        imgwin.drag_dest_set_target_list(targets)
+
         imgwin.connect("drag-data-received", self.drop_event_cb)
         imgwin.connect("drag-motion", self.drag_motion_cb)
         imgwin.connect("drag-drop", self.drag_drop_cb)
-        self.TARGET_TYPE_TEXT = 0
-        imgwin.drag_dest_set(Gtk.DestDefaults.ALL, [],
-                             Gdk.DragAction.COPY)
-        imgwin.drag_dest_add_text_targets()
-
-        # Does widget accept focus when mouse enters window
-        self.enter_focus = self.t_.get('enter_focus', True)
 
         # @$%&^(_)*&^ gnome!!
         self._keytbl = {
@@ -330,11 +355,8 @@ class ImageViewEvent(ImageViewGtk):
         except KeyError:
             return keyname
 
-    def get_keyTable(self):
+    def get_key_table(self):
         return self._keytbl
-
-    def set_enter_focus(self, tf):
-        self.enter_focus = tf
 
     def map_event(self, widget, event):
         super(ImageViewZoom, self).configure_event(widget, event)
@@ -344,7 +366,11 @@ class ImageViewEvent(ImageViewGtk):
         return self.make_callback('focus', hasFocus)
 
     def enter_notify_event(self, widget, event):
-        if self.enter_focus:
+        self.last_win_x, self.last_win_y = event.x, event.y
+        self.check_cursor_location()
+
+        enter_focus = self.t_.get('enter_focus', False)
+        if enter_focus:
             widget.grab_focus()
         return self.make_callback('enter')
 
@@ -357,7 +383,6 @@ class ImageViewEvent(ImageViewGtk):
         # changes to another window
         #Gdk.keyboard_grab(widget.get_window(), False, event.time)
         #widget.grab_add()
-
         keyname = Gdk.keyval_name(event.keyval)
         keyname = self.transkey(keyname)
         self.logger.debug("key press event, key=%s" % (keyname))
@@ -366,7 +391,6 @@ class ImageViewEvent(ImageViewGtk):
     def key_release_event(self, widget, event):
         #Gdk.keyboard_ungrab(event.time)
         #widget.grab_remove()
-
         keyname = Gdk.keyval_name(event.keyval)
         keyname = self.transkey(keyname)
         self.logger.debug("key release event, key=%s" % (keyname))
@@ -448,9 +472,9 @@ class ImageViewEvent(ImageViewGtk):
                                      data_x, data_y)
 
     def drag_drop_cb(self, widget, context, x, y, time):
-        self.logger.debug('drag_drop_cb')
+        self.logger.debug("drag_drop_cb initiated")
         # initiates a drop
-        success = delete = False  # noqa
+        success = False
         targets = context.list_targets()
         for mimetype in targets:
             if str(mimetype) in ("text/thumb", "text/plain", "text/uri-list"):
@@ -463,7 +487,7 @@ class ImageViewEvent(ImageViewGtk):
         return True
 
     def drag_motion_cb(self, widget, context, x, y, time):
-        self.logger.debug('drag_motion_cb')
+        self.logger.debug("drag_motion_cb initiated")
         # checks whether a drop is possible
         targets = context.list_targets()
         for mimetype in targets:
@@ -472,25 +496,36 @@ class ImageViewEvent(ImageViewGtk):
                 return True
 
         Gdk.drag_status(context, 0, time)
-        self.logger.debug('drag_motion_cb done')
+        self.logger.debug("drag_motion_cb done")
         return False
 
     def drop_event_cb(self, widget, context, x, y, selection, info, time):
-        self.logger.debug('drop_event')
-        if info != self.TARGET_TYPE_TEXT:
-            Gtk.drag_finish(context, False, False, time)
-            return False
+        self.logger.debug("drop event initiated")
 
-        buf = selection.get_text().strip()
-        if '\r\n' in buf:
-            paths = buf.split('\r\n')
+        if selection is None or selection.get_length() == 0:
+            return
+
+        paths = []
+        if info == GtkHelp.DND_TARGET_TYPE_TEXT:
+            # selection contains text
+            buf = selection.get_text().strip()
+            if '\r\n' in buf:
+                # windows
+                paths = buf.split('\r\n')
+            else:
+                paths = buf.split('\n')
+        elif info == GtkHelp.DND_TARGET_TYPE_URIS:
+            # selection contains URIs
+            paths = selection.get_uris()
         else:
-            paths = buf.split('\n')
+            self.logger.error("Dropped selection type ({}) is not recognized!".format(info))
+            return
+
         self.logger.debug("dropped filename(s): %s" % (str(paths)))
 
-        self.make_ui_callback('drag-drop', paths)
+        if len(paths) > 0:
+            self.make_ui_callback('drag-drop', paths)
 
-        Gtk.drag_finish(context, True, False, time)
         return True
 
 
@@ -514,7 +549,7 @@ class ImageViewZoom(Mixins.UIMixin, ImageViewEvent):
                                 settings=settings)
         Mixins.UIMixin.__init__(self)
 
-        self.ui_setActive(True)
+        self.ui_set_active(True)
 
         if bindmap is None:
             bindmap = ImageViewZoom.bindmapClass(self.logger)
@@ -570,6 +605,7 @@ class ScrolledView(Gtk.Table):
         self._adjusting = False
         self._scrolling = False
         self.pad = 20
+        self.sb_thickness = 20
         self.rng_x = 100.0
         self.rng_y = 100.0
 
@@ -584,31 +620,27 @@ class ScrolledView(Gtk.Table):
 
         self.hsb = Gtk.HScrollbar()
         self.hsb.set_round_digits(4)
+        self.hsb.set_size_request(-1, self.sb_thickness)
         self.hsb.connect('value-changed', self._scroll_contents)
-        self.attach(self.hsb, 0, 1, 1, 2,
-                    xoptions=Gtk.AttachOptions.FILL, yoptions=0,
-                    xpadding=0, ypadding=0)
         self.vsb = Gtk.VScrollbar()
         self.vsb.set_round_digits(4)
+        self.vsb.set_size_request(self.sb_thickness, -1)
         self.vsb.connect('value-changed', self._scroll_contents)
-        self.attach(self.vsb, 1, 2, 0, 1,
-                    xoptions=0, yoptions=Gtk.AttachOptions.FILL,
-                    xpadding=0, ypadding=0)
 
         self.viewer.add_callback('redraw', self._calc_scrollbars)
         self.viewer.add_callback('limits-set',
-                                 lambda v, l: self._calc_scrollbars(v))
+                                 lambda v, l: self._calc_scrollbars(v, 0))
 
-        self._calc_scrollbars(self.viewer)
+        self._calc_scrollbars(self.viewer, 0)
 
     def get_widget(self):
         return self
 
-    def _calc_scrollbars(self, viewer):
+    def _calc_scrollbars(self, viewer, whence):
         """Calculate and set the scrollbar handles from the pan and
         zoom positions.
         """
-        if self._scrolling:
+        if self._scrolling or whence > 0:
             return
 
         # flag that suppresses a cyclical callback
@@ -656,31 +688,36 @@ class ScrolledView(Gtk.Table):
             bd = self.viewer.get_bindings()
             bd.pan_by_pct(self.viewer, pct_x, pct_y, pad=self.pad)
 
+            # This shouldn't be necessary, but seems to be
+            self.viewer.redraw(whence=0)
+
         finally:
             self._scrolling = False
 
         return True
 
     def scroll_bars(self, horizontal='on', vertical='on'):
-        if horizontal == 'on':
-            pass
+        if horizontal in ('on', 'auto'):
+            self.attach(self.hsb, 0, 1, 1, 2,
+                        xoptions=Gtk.AttachOptions.FILL, yoptions=0,
+                        xpadding=0, ypadding=0)
+            self.hsb.show()
         elif horizontal == 'off':
-            pass
-        elif horizontal == 'auto':
-            pass
+            self.remove(self.hsb)
         else:
             raise ValueError("Bad scroll bar option: '%s'; should be one of ('on', 'off' or 'auto')" % (horizontal))
 
-        if vertical == 'on':
-            pass
+        if vertical in ('on', 'auto'):
+            self.attach(self.vsb, 1, 2, 0, 1,
+                        xoptions=0, yoptions=Gtk.AttachOptions.FILL,
+                        xpadding=0, ypadding=0)
+            self.vsb.show()
         elif vertical == 'off':
-            pass
-        elif vertical == 'auto':
-            pass
+            self.remove(self.vsb)
         else:
             raise ValueError("Bad scroll bar option: '%s'; should be one of ('on', 'off' or 'auto')" % (vertical))
 
-        self.viewer.logger.warning("scroll_bar(): settings for gtk3 currently ignored!")
+        #self.viewer.logger.warning("scroll_bar(): settings for gtk currently ignored!")
 
 
 #END

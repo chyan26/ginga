@@ -5,21 +5,14 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import print_function
-
 import sys
 
-from ginga import AstroImage
 from ginga.tkw.ImageViewTk import ImageViewCanvas
 from ginga.misc import log
-from ginga.util import six
+from ginga.util.loader import load_data
 
-if six.PY2:
-    import Tkinter
-    from tkFileDialog import askopenfilename
-else:
-    import tkinter as Tkinter
-    from tkinter.filedialog import askopenfilename
+import tkinter as Tkinter
+from tkinter.filedialog import askopenfilename
 
 STD_FORMAT = '%(asctime)s | %(levelname)1.1s | %(filename)s:%(lineno)d (%(funcName)s) | %(message)s'
 
@@ -52,6 +45,8 @@ class FitsViewer(object):
         fi.set_autocut_params('zscale')
         fi.enable_autozoom('on')
         fi.enable_draw(False)
+        # tk seems to not take focus with a click
+        fi.set_enter_focus(True)
         fi.set_callback('cursor-changed', self.cursor_cb)
         fi.set_bg(0.2, 0.2, 0.2)
         fi.ui_set_active(True)
@@ -67,7 +62,7 @@ class FitsViewer(object):
         canvas.enable_draw(True)
         #canvas.enable_edit(True)
         canvas.set_drawtype('rectangle', color='blue')
-        canvas.setSurface(fi)
+        canvas.set_surface(fi)
         self.canvas = canvas
         # add canvas to view
         fi.add(canvas)
@@ -143,9 +138,7 @@ class FitsViewer(object):
         self.canvas.deleteAllObjects()
 
     def load_file(self, filepath):
-        image = AstroImage.AstroImage(logger=self.logger)
-        image.load_file(filepath)
-
+        image = load_data(filepath, logger=self.logger)
         self.fitsimage.set_image(image)
         self.root.title(filepath)
 
@@ -209,21 +202,21 @@ def main(options, args):
 
 if __name__ == "__main__":
 
-    # Parse command line options with nifty optparse module
-    from optparse import OptionParser
+    # Parse command line options
+    from argparse import ArgumentParser
 
-    usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage, version=('%%prog'))
+    usage = "usage: %prog [options] [args]"
+    argprs = ArgumentParser(usage=usage)
 
-    optprs.add_option("--debug", dest="debug", default=False,
-                      action="store_true",
-                      help="Enter the pdb debugger on main()")
-    optprs.add_option("--profile", dest="profile", action="store_true",
-                      default=False,
-                      help="Run the profiler on main()")
-    log.addlogopts(optprs)
+    argprs.add_argument("--debug", dest="debug", default=False,
+                        action="store_true",
+                        help="Enter the pdb debugger on main()")
+    argprs.add_argument("--profile", dest="profile", action="store_true",
+                        default=False,
+                        help="Run the profiler on main()")
+    log.addlogopts(argprs)
 
-    (options, args) = optprs.parse_args(sys.argv[1:])
+    (options, args) = argprs.parse_known_args(sys.argv[1:])
 
     # Are we debugging this?
     if options.debug:

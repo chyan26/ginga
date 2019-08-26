@@ -8,19 +8,14 @@ import astropy.wcs as pywcs
 from astropy.io import fits as pyfits
 from astropy import coordinates, units
 
-# Note: Relative import breaks test in PY2
-from ginga.util.six.moves import map
 from ginga.util.wcsmod import common
 
-if hasattr(coordinates, 'SkyCoord'):
-    try:
-        import sunpy.coordinates  # noqa
-    except ImportError:
-        pass
-    coord_types = [f.name for f in
-                   coordinates.frame_transform_graph.frame_set]
-else:
-    coord_types = ['icrs', 'fk5', 'fk4', 'galactic']
+try:
+    import sunpy.coordinates  # noqa
+except ImportError:
+    pass
+coord_types = [f.name for f in
+               coordinates.frame_transform_graph.frame_set]
 
 
 class AstropyWCS(common.BaseWCS):
@@ -33,42 +28,40 @@ class AstropyWCS(common.BaseWCS):
     """
     def __init__(self, logger):
         super(AstropyWCS, self).__init__(logger)
-
-        self.new_coords = False            # new astropy coordinate system
-
-        if hasattr(coordinates, 'SkyCoord'):
-            # v0.4 series astropy and later
-            self.new_coords = True
-
-        elif hasattr(coordinates, 'ICRS'):
-            # v0.3 series astropy
-            self.coord_table = {
-                'icrs': coordinates.ICRS,
-                'fk5': coordinates.FK5,
-                'fk4': coordinates.FK4,
-                'galactic': coordinates.Galactic,
-            }
-
-        else:
-            # v0.2 series astropy
-            self.coord_table = {
-                'icrs': coordinates.ICRSCoordinates,
-                'fk5': coordinates.FK5Coordinates,
-                'fk4': coordinates.FK4Coordinates,
-                'galactic': coordinates.GalacticCoordinates,
-            }
         self.kind = 'astropy/WCSLIB'
 
     def load_header(self, header, fobj=None):
         try:
             # reconstruct a pyfits header, because otherwise we take an
             # incredible performance hit in astropy.wcs
-            self.logger.debug("Reconstructing PyFITS header")
+            self.logger.debug("Reconstructing astropy.io.fits header")
             self.header = pyfits.Header(header.items())
 
             self.logger.debug("Trying to make astropy-- wcs object")
             self.wcs = pywcs.WCS(self.header, fobj=fobj, relax=True)
             self.logger.debug("made astropy wcs object")
+
+            self.coordsys = common.get_coord_system_name(self.header)
+            self.logger.debug("Coordinate system is: %s" % (self.coordsys))
+
+        except Exception as e:
+            self.logger.error("Error making WCS object: %s" % (str(e)))
+            self.wcs = None
+
+    def load_nddata(self, ndd):
+        try:
+            # reconstruct a pyfits header, because otherwise we take an
+            # incredible performance hit in astropy.wcs
+            self.logger.debug("Reconstructing astropy.io.fits header")
+            self.header = pyfits.Header(ndd.meta)
+
+            if ndd.wcs is None:
+                self.logger.debug("Trying to make astropy FITS WCS object")
+                self.wcs = pywcs.WCS(self.header, relax=True)
+                self.logger.debug("made astropy wcs object")
+            else:
+                self.logger.debug("reused nddata wcs object")
+                self.wcs = ndd.wcs
 
             self.coordsys = common.get_coord_system_name(self.header)
             self.logger.debug("Coordinate system is: %s" % (self.coordsys))
@@ -150,62 +143,24 @@ class AstropyWCS(common.BaseWCS):
         ra_deg, dec_deg = self.pixtoradec(idxs, coords=coords)
         self.logger.debug("ra, dec = %f, %f" % (ra_deg, dec_deg))
 
-        if not self.new_coords:
-            # convert to astropy coord
-            try:
-                fromclass = self.coord_table[self.coordsys]
-            except KeyError:
-                raise common.WCSError("No such coordinate system available: '%s'" % (
-                    self.coordsys))
-
-            coord = fromclass(ra_deg, dec_deg,
-                              unit=(units.degree, units.degree))
-
-            if (system is None) or (system == self.coordsys):
-                return coord
-
-            # Now give it back to the user in the system requested
-            try:
-                toclass = self.coord_table[system]
-            except KeyError:
-                raise common.WCSError("No such coordinate system available: '%s'" % (
-                    system))
-
-            coord = coord.transform_to(toclass)
-
-        else:
-            frameClass = coordinates.frame_transform_graph.lookup_name(
-                self.coordsys)
-            coord = frameClass(ra_deg * units.degree, dec_deg * units.degree)
-            toClass = coordinates.frame_transform_graph.lookup_name(system)
-            # Skip in input and output is the same (no realize_frame
-            # call in astropy)
-            if toClass != frameClass:
-                coord = coord.transform_to(toClass)
+        frame_class = coordinates.frame_transform_graph.lookup_name(
+            self.coordsys)
+        coord = frame_class(ra_deg * units.degree, dec_deg * units.degree)
+        to_class = coordinates.frame_transform_graph.lookup_name(system)
+        # Skip in input and output is the same (no realize_frame
+        # call in astropy)
+        if to_class != frame_class:
+            coord = coord.transform_to(to_class)
 
         return coord
 
-    def _deg(self, coord):
-        # AstroPy changed the API so now we have to support more
-        # than one--we don't know what version the user has installed!
-        if hasattr(coord, 'degrees'):
-            return coord.degrees
-        else:
-            return coord.degree
-
     def pixtosystem(self, idxs, system=None, coords='data'):
         if self.coordsys == 'pixel':
-            x, y = self.pixtoradec(idxs, coords=coords)
-            return (x, y)
+            return self.pixtoradec(idxs, coords=coords)
 
         c = self.pixtocoords(idxs, system=system, coords=coords)
-        if not self.new_coords:
-            # older astropy
-            return (self._deg(c.lonangle), self._deg(c.latangle))
-        else:
-            r = c.data
-            return tuple(map(self._deg, [getattr(r, component)
-                                         for component in r.components[:2]]))
+        r = c.data.represent_as(coordinates.UnitSphericalRepresentation)
+        return r.lon.deg, r.lat.deg
 
     def datapt_to_wcspt(self, datapt, coords='data', naxispath=None):
 
@@ -279,20 +234,16 @@ class AstropyWCS(common.BaseWCS):
         wcspt = self.datapt_to_wcspt(datapt, coords=coords,
                                      naxispath=naxispath)
 
-        if not self.new_coords:
-            raise NotImplementedError
-
-        else:
-            frameClass = coordinates.frame_transform_graph.lookup_name(
-                self.coordsys)
-            ra_deg = wcspt[:, 0]
-            dec_deg = wcspt[:, 1]
-            coord = frameClass(ra_deg * units.degree, dec_deg * units.degree)
-            toClass = coordinates.frame_transform_graph.lookup_name(system)
-            # Skip if input and output is the same (no realize_frame
-            # call in astropy)
-            if toClass != frameClass:
-                coord = coord.transform_to(toClass)
+        frame_class = coordinates.frame_transform_graph.lookup_name(
+            self.coordsys)
+        ra_deg = wcspt[:, 0]
+        dec_deg = wcspt[:, 1]
+        coord = frame_class(ra_deg * units.degree, dec_deg * units.degree)
+        to_class = coordinates.frame_transform_graph.lookup_name(system)
+        # Skip if input and output is the same (no realize_frame
+        # call in astropy)
+        if to_class != frame_class:
+            coord = coord.transform_to(to_class)
 
         return coord
 

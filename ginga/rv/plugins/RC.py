@@ -186,7 +186,7 @@ import sys
 import bz2
 from io import BytesIO
 
-import numpy
+import numpy as np
 
 from ginga import GingaPlugin
 from ginga import AstroImage
@@ -208,6 +208,11 @@ class RC(GingaPlugin.GlobalPlugin):
         self.port = 9000
         # If blank, listens on all interfaces
         self.host = 'localhost'
+
+        # this will hold the remote object
+        self.robj = None
+        # this will hold the remote object server
+        self.server = None
 
         self.ev_quit = fv.ev_quit
 
@@ -376,7 +381,7 @@ class GingaWrapper(object):
 
             # dtype string works for most instances
             if dtype == '':
-                dtype = numpy.float32
+                dtype = np.float
 
             byteswap = metadata.get('byteswap', False)
 
@@ -463,7 +468,9 @@ class GingaWrapper(object):
             newargs = args[1:]
             obj = klass(*newargs, **kwargs)
             return self.fv.gui_call(canvas.add, obj)
-        elif command == 'clear':  # Clear only drawn objects, not the image
+
+        elif command == 'clear':
+            # Clear only drawn objects, not the image
             nobj = len(canvas.objects)
             if nobj == 0:
                 return
@@ -471,8 +478,10 @@ class GingaWrapper(object):
                 return
             else:
                 canvas.objects = canvas.objects[0:1]
+
         elif command == 'nobj':
             return len(canvas.objects)
+
         else:
             print("Canvas RC command not recognized")
             return

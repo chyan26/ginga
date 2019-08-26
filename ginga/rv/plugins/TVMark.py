@@ -70,9 +70,6 @@ Used together with ``TVMask``, you can overlay both point sources and masked
 regions in Ginga.
 
 """
-from __future__ import absolute_import, division, print_function
-from ginga.util.six import iteritems, itervalues
-from ginga.util.six.moves import map, zip
 
 # STDLIB
 import re
@@ -285,7 +282,8 @@ class TVMark(LocalPlugin):
         self.gui_up = True
 
         # Initialize coordinates file selection dialog
-        self.cfilesel = FileSelection(self.fv.w.root.get_widget())
+        self.cfilesel = FileSelection(self.fv.w.root.get_widget(),
+                                      all_at_once=True)
 
         # Populate table
         self.redo()
@@ -318,7 +316,7 @@ class TVMark(LocalPlugin):
         max_x = image.width - 1
         max_y = image.height - 1
 
-        for key, coords in iteritems(self.coords_dict):
+        for key, coords in self.coords_dict.items():
             if len(coords) == 0:
                 continue
 
@@ -515,6 +513,16 @@ class TVMark(LocalPlugin):
 
         self.redo()
 
+    def load_files(self, filenames):
+        """Load coordinates files.
+
+        Results are appended to previously loaded coordinates.
+        This can be used to load one file per color.
+
+        """
+        for filename in filenames:
+            self.load_file(filename)
+
     def _convert_radec(self, val):
         """Convert RA or DEC table column to degrees and extract data.
         Assume already in degrees if cannot convert.
@@ -533,7 +541,7 @@ class TVMark(LocalPlugin):
     # TODO: Support more extensions?
     def load_coords_cb(self):
         """Activate file dialog to select coordinates file."""
-        self.cfilesel.popup('Load coordinates file', self.load_file,
+        self.cfilesel.popup('Load coordinates file', self.load_files,
                             initialdir='.',
                             filename='Table files (*.txt *.dat *.fits)')
 
@@ -546,7 +554,7 @@ class TVMark(LocalPlugin):
         self.treeview.set_tree(self.tree_dict)
         n = 0
 
-        for sub_dict in itervalues(self.tree_dict):
+        for sub_dict in self.tree_dict.values():
             n += len(sub_dict)
 
         self.w.nshown.set_text(str(n))
@@ -566,13 +574,13 @@ class TVMark(LocalPlugin):
         # Display highlighted entries only in second table
         self.treeviewsel.set_tree(res_dict)
 
-        for kstr, sub_dict in iteritems(res_dict):
+        for kstr, sub_dict in res_dict.items():
             s = kstr.split(',')
             marktype = s[0]
             marksize = float(s[1])
             markcolor = s[2]
 
-            for bnch in itervalues(sub_dict):
+            for bnch in sub_dict.values():
                 obj = self._get_markobj(bnch.X - self.pixelstart,
                                         bnch.Y - self.pixelstart,
                                         marktype, marksize, markcolor, width)

@@ -5,7 +5,6 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import print_function
 
 from ginga import Mixins, Bindings
 from ginga.canvas.mixins import DrawingMixin, CanvasMixin, CompoundMixin
@@ -58,7 +57,12 @@ class ImageViewPg(ImageView):
 
         # Format 'png' is ok with 'RGBA', but 'jpeg' only works with 'RGB'
         self.rgb_order = 'RGB'
-        #self.defer_redraw = False
+        # this should already be so, but just in case...
+        self.defer_redraw = True
+
+        # these will be assigned in set_widget()
+        self.timer_redraw = None
+        self.timer_msg = None
 
     def set_widget(self, canvas_w):
         """Call this method with the widget that will be used
@@ -66,6 +70,14 @@ class ImageViewPg(ImageView):
         """
         self.logger.debug("set widget canvas_w=%s" % canvas_w)
         self.pgcanvas = canvas_w
+
+        app = canvas_w.get_app()
+        self.timer_redraw = app.make_timer()
+        self.timer_redraw.add_callback('expired',
+                                       lambda t: self.delayed_redraw())
+        self.timer_msg = app.make_timer()
+        self.timer_msg.add_callback('expired',
+                                    lambda t: self.clear_onscreen_message())
 
         ## wd, ht = canvas_w.get_size()
         ## self.configure_window(wd, ht)
@@ -81,7 +93,9 @@ class ImageViewPg(ImageView):
         try:
             self.logger.debug("getting image as buffer...")
             format = self.t_.get('html5_canvas_format', default_html_fmt)
-            buf = self.get_rgb_image_as_bytes(format=format, quality=90)
+
+            buf = self.renderer.get_surface_as_rgb_format_bytes(
+                format=format, quality=90)
             self.logger.debug("got '%s' RGB image buffer, len=%d" % (
                 format, len(buf)))
 
@@ -92,7 +106,8 @@ class ImageViewPg(ImageView):
 
     def reschedule_redraw(self, time_sec):
         if self.pgcanvas is not None:
-            self.pgcanvas.reset_timer('redraw', time_sec)
+            self.timer_redraw.stop()
+            self.timer_redraw.start(time_sec)
         else:
             self.delayed_redraw()
 
@@ -100,7 +115,7 @@ class ImageViewPg(ImageView):
         """Used for generating thumbnails.  Does not include overlaid
         graphics.
         """
-        image_buf = self.get_rgb_image_as_buffer()
+        image_buf = self.renderer.get_surface_as_rgb_format_buffer()
         return image_buf.getvalue()
 
     def save_plain_image_as_file(self, filepath, format='png', quality=90):
@@ -117,9 +132,10 @@ class ImageViewPg(ImageView):
     def onscreen_message(self, text, delay=None, redraw=True):
         if self.pgcanvas is None:
             return
+        self.timer_msg.stop()
         self.set_onscreen_message(text, redraw=redraw)
-        if delay:
-            self.pgcanvas.reset_timer('msg', delay)
+        if delay is not None:
+            self.timer_msg.start(delay)
 
     def clear_onscreen_message(self):
         self.logger.debug("clearing message...")
@@ -161,9 +177,6 @@ class ImageViewEvent(ImageViewPg):
     def __init__(self, logger=None, rgbmap=None, settings=None):
         ImageViewPg.__init__(self, logger=logger, rgbmap=rgbmap,
                              settings=settings)
-
-        # Does widget accept focus when mouse enters window
-        self.enter_focus = self.t_.get('enter_focus', True)
 
         self._button = 0
 
@@ -376,19 +389,17 @@ class ImageViewEvent(ImageViewPg):
         self.logger.debug("key name in ginga '%s'" % (key))
         return key
 
-    def get_keyTable(self):
+    def get_key_table(self):
         return self._keytbl
 
-    def set_enter_focus(self, tf):
-        self.enter_focus = tf
-
-    def focus_event(self, event, hasFocus):
-        self.logger.debug("focus event: focus=%s" % (hasFocus))
-        return self.make_callback('focus', hasFocus)
+    def focus_event(self, event, has_focus):
+        self.logger.debug("focus event: focus=%s" % (has_focus))
+        return self.make_callback('focus', has_focus)
 
     def enter_notify_event(self, event):
         self.logger.debug("entering widget...")
-        ## if self.enter_focus:
+        ## enter_focus = self.t_.get('enter_focus', False)
+        ## if enter_focus:
         ##     self.pgcanvas.focus_set()
         return self.make_callback('enter')
 
@@ -487,7 +498,7 @@ class ImageViewEvent(ImageViewPg):
 
         # 15 deg is standard 1-click turn for a wheel mouse
         # delta usually returns +/- 1.0
-        numDegrees = abs(delta) * 15.0
+        num_degrees = abs(delta) * 15.0
 
         direction = 0.0
         if delta > 0:
@@ -495,11 +506,11 @@ class ImageViewEvent(ImageViewPg):
         elif delta < 0:
             direction = 180.0
         self.logger.debug("scroll deg=%f direction=%f" % (
-            numDegrees, direction))
+            num_degrees, direction))
 
         data_x, data_y = self.check_cursor_location()
 
-        return self.make_ui_callback('scroll', direction, numDegrees,
+        return self.make_ui_callback('scroll', direction, num_degrees,
                                      data_x, data_y)
 
     def drop_event(self, event):
@@ -582,7 +593,7 @@ class ImageViewZoom(Mixins.UIMixin, ImageViewEvent):
                                 settings=settings)
         Mixins.UIMixin.__init__(self)
 
-        self.ui_setActive(True)
+        self.ui_set_active(True)
 
         if bindmap is None:
             bindmap = ImageViewZoom.bindmapClass(self.logger)

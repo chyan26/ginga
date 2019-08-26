@@ -5,6 +5,7 @@
 # Please see the file LICENSE.txt for details.
 #
 import os
+import numpy as np
 
 from ginga import ImageView, Mixins, Bindings
 from ginga.util.io_rgb import RGBFileHandler
@@ -81,7 +82,7 @@ class ImageViewMock(ImageView.ImageViewBase):
         self.logger.debug("drawing to pixmap")
 
         # Prepare array for rendering
-        arr = rgbobj.get_array(self.rgb_order)
+        arr = rgbobj.get_array(self.rgb_order, dtype=np.uint8)
         (height, width) = arr.shape[:2]
 
         return self._render_offscreen(self.pixmap, arr, dst_x, dst_y,
@@ -105,12 +106,12 @@ class ImageViewMock(ImageView.ImageViewBase):
         self.configure(width, height)
 
     def get_image_as_array(self):
-        return self.getwin_array(order=self.rgb_order)
+        return self.getwin_array(order=self.rgb_order, dtype=np.uint8)
 
     def get_rgb_image_as_buffer(self, output=None, format='png',
                                 quality=90):
         # copy pixmap to buffer
-        data_np = self.getwin_array(order=self.rgb_order)
+        data_np = self.getwin_array(order=self.rgb_order, dtype=np.uint8)
         header = {}
         fmt_buf = self.rgb_fh.get_buffer(data_np, header, format,
                                          output=output)
@@ -204,6 +205,10 @@ class ImageViewMock(ImageView.ImageViewBase):
             # `delay` sec
             pass
 
+    def take_focus(self):
+        # have the widget grab the keyboard focus
+        pass
+
 
 class ImageViewEvent(ImageViewMock):
 
@@ -216,9 +221,6 @@ class ImageViewEvent(ImageViewMock):
         # mouse movement, wheel movement, key up/down, trackpad
         # gestures
         #...
-
-        # Does widget accept focus when mouse enters window
-        self.enter_focus = self.t_.get('enter_focus', True)
 
         # Define cursors
         for curname, filename in (('pan', 'openHandCursor.png'),
@@ -267,11 +269,8 @@ class ImageViewEvent(ImageViewMock):
         except KeyError:
             return keyname
 
-    def get_keyTable(self):
+    def get_key_table(self):
         return self._keytbl
-
-    def set_enter_focus(self, tf):
-        self.enter_focus = tf
 
     def map_event(self, widget, event):
         """
@@ -293,7 +292,8 @@ class ImageViewEvent(ImageViewMock):
         Called when the mouse cursor enters the window.
         Adjust method signature as appropriate for callback.
         """
-        if self.enter_focus:
+        enter_focus = self.t_.get('enter_focus', False)
+        if enter_focus:
             # set focus on widget
             pass
         return self.make_callback('enter')
@@ -393,7 +393,7 @@ class ImageViewEvent(ImageViewMock):
         Adjust method signature as appropriate for callback.
         """
         x, y = event.x, event.y
-        numDegrees = 0
+        num_degrees = 0
         direction = 0
 
         # x, y = coordinates of mouse
@@ -401,14 +401,14 @@ class ImageViewEvent(ImageViewMock):
 
         # calculate number of degrees of scroll and direction of scroll
         # both floats in the 0-359.999 range
-        # numDegrees =
+        # num_degrees =
         # direction =
         self.logger.debug("scroll deg=%f direction=%f" % (
-            numDegrees, direction))
+            num_degrees, direction))
 
         data_x, data_y = self.check_cursor_location()
 
-        return self.make_ui_callback('scroll', direction, numDegrees,
+        return self.make_ui_callback('scroll', direction, num_degrees,
                                      data_x, data_y)
 
     def drop_event(self, widget, event):
@@ -442,7 +442,7 @@ class ImageViewZoom(Mixins.UIMixin, ImageViewEvent):
                                 rgbmap=rgbmap)
         Mixins.UIMixin.__init__(self)
 
-        self.ui_setActive(True)
+        self.ui_set_active(True)
 
         if bindmap is None:
             bindmap = ImageViewZoom.bindmapClass(self.logger)

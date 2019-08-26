@@ -5,15 +5,15 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import print_function
 
 import sys
 import logging
 
-from ginga import AstroImage, colors
+from ginga import colors
 from ginga.canvas.CanvasObject import get_canvas_types
 from ginga.misc import log
 from ginga.web.pgw import Widgets, Viewers
+from ginga.util.loader import load_data
 
 
 class FitsViewer(object):
@@ -179,9 +179,7 @@ class FitsViewer(object):
         self.canvas.delete_all_objects()
 
     def load_file(self, filepath):
-        image = AstroImage.AstroImage(logger=self.logger)
-        image.load_file(filepath)
-
+        image = load_data(filepath, logger=self.logger)
         self.fitsimage.set_image(image)
         self.top.set_title(filepath)
 
@@ -312,42 +310,42 @@ def main(options, args):
 
 if __name__ == "__main__":
 
-    # Parse command line options with nifty optparse module
-    from optparse import OptionParser
+    # Parse command line options
+    from argparse import ArgumentParser
 
-    usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage, version=('%%prog'))
+    usage = "usage: %prog [options] [args]"
+    argprs = ArgumentParser(usage=usage)
 
-    optprs.add_option("--debug", dest="debug", default=False, action="store_true",
-                      help="Enter the pdb debugger on main()")
-    optprs.add_option("--host", dest="host", metavar="HOST",
-                      default='localhost',
-                      help="Listen on HOST for connections")
-    optprs.add_option("--log", dest="logfile", metavar="FILE",
-                      help="Write logging output to FILE")
-    optprs.add_option("--loglevel", dest="loglevel", metavar="LEVEL",
-                      type='int', default=logging.INFO,
-                      help="Set logging level to LEVEL")
-    optprs.add_option("--opencv", dest="use_opencv", default=False,
-                      action="store_true",
-                      help="Use OpenCv acceleration")
-    optprs.add_option("--opencl", dest="use_opencl", default=False,
-                      action="store_true",
-                      help="Use OpenCL acceleration")
-    optprs.add_option("--port", dest="port", metavar="PORT",
-                      type=int, default=9909,
-                      help="Listen on PORT for connections")
-    optprs.add_option("--profile", dest="profile", action="store_true",
-                      default=False,
-                      help="Run the profiler on main()")
-    optprs.add_option("--stderr", dest="logstderr", default=False,
-                      action="store_true",
-                      help="Copy logging also to stderr")
-    optprs.add_option("-t", "--toolkit", dest="toolkit", metavar="NAME",
-                      default='qt',
-                      help="Choose GUI toolkit (gtk|qt)")
+    argprs.add_argument("--debug", dest="debug", default=False, action="store_true",
+                        help="Enter the pdb debugger on main()")
+    argprs.add_argument("--host", dest="host", metavar="HOST",
+                        default='localhost',
+                        help="Listen on HOST for connections")
+    argprs.add_argument("--log", dest="logfile", metavar="FILE",
+                        help="Write logging output to FILE")
+    argprs.add_argument("--loglevel", dest="loglevel", metavar="LEVEL",
+                        type=int, default=logging.INFO,
+                        help="Set logging level to LEVEL")
+    argprs.add_argument("--opencv", dest="use_opencv", default=False,
+                        action="store_true",
+                        help="Use OpenCv acceleration")
+    argprs.add_argument("--opencl", dest="use_opencl", default=False,
+                        action="store_true",
+                        help="Use OpenCL acceleration")
+    argprs.add_argument("--port", dest="port", metavar="PORT",
+                        type=int, default=9909,
+                        help="Listen on PORT for connections")
+    argprs.add_argument("--profile", dest="profile", action="store_true",
+                        default=False,
+                        help="Run the profiler on main()")
+    argprs.add_argument("--stderr", dest="logstderr", default=False,
+                        action="store_true",
+                        help="Copy logging also to stderr")
+    argprs.add_argument("-t", "--toolkit", dest="toolkit", metavar="NAME",
+                        default='qt',
+                        help="Choose GUI toolkit (gtk|qt)")
 
-    (options, args) = optprs.parse_args(sys.argv[1:])
+    (options, args) = argprs.parse_known_args(sys.argv[1:])
 
     # Are we debugging this?
     if options.debug:

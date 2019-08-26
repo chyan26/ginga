@@ -4,16 +4,14 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import absolute_import
-
 import os
 from io import BytesIO
 
-import ginga.util.six as six
-from ginga.util.six.moves import map
+import numpy as np
+
 from ginga import ImageView, Mixins, Bindings
 from ginga.util.paths import icondir
-from ginga.qtw.QtHelp import (QtGui, QtCore, QColor, QImage, QPixmap, QCursor,
+from ginga.qtw.QtHelp import (QtGui, QtCore, QImage, QPixmap, QCursor,
                               QPainter, Timer, get_scroll_info)
 
 from .CanvasRenderQt import CanvasRenderer
@@ -125,10 +123,14 @@ class ImageViewQt(ImageView.ImageViewBase):
             raise ImageViewQtError("Undefined render type: '%s'" % (render))
         self.imgwin.viewer = self
         self.pixmap = None
-        # Qt expects 32bit BGRA data for color images
+        self.qimg_fmt = QImage.Format_RGB32
+        # find out optimum format for backing store
+        #self.qimg_fmt = QPixmap(1, 1).toImage().format()
+        # Qt needs this to be in BGR(A)
         self.rgb_order = 'BGRA'
 
-        self.renderer = CanvasRenderer(self)
+        # default renderer is Qt one
+        self.renderer = CanvasRenderer(self, surface_type='qpixmap')
 
         self.msgtimer = Timer()
         self.msgtimer.add_callback('expired',
@@ -142,63 +144,35 @@ class ImageViewQt(ImageView.ImageViewBase):
     def get_widget(self):
         return self.imgwin
 
-    def _render_offscreen(self, drawable, data, dst_x, dst_y,
-                          width, height):
-        # NOTE [A]
-        daht, dawd, depth = data.shape
-        self.logger.debug("data shape is %dx%dx%d" % (dawd, daht, depth))
-
-        # Get qimage for copying pixel data
-        qimage = self._get_qimage(data)
-
-        painter = QPainter(drawable)
-        painter.setWorldMatrixEnabled(True)
-
-        # fill pixmap with background color
-        imgwin_wd, imgwin_ht = self.get_window_size()
-        bgclr = self._get_color(*self.img_bg)
-        painter.fillRect(QtCore.QRect(0, 0, imgwin_wd, imgwin_ht),
-                         bgclr)
-
-        # draw image data from buffer to offscreen pixmap
-        painter.drawImage(QtCore.QRect(dst_x, dst_y, width, height),
-                          qimage,
-                          QtCore.QRect(0, 0, width, height))
-
-    def render_image(self, rgbobj, dst_x, dst_y):
-        """Render the image represented by (rgbobj) at dst_x, dst_y
-        in the pixel space.
-        """
-        self.logger.debug("redraw pixmap=%s" % (self.pixmap))
-        if self.pixmap is None:
-            return
-        self.logger.debug("drawing to pixmap")
-
-        # Prepare array for rendering
-        arr = rgbobj.get_array(self.rgb_order)
-        (height, width) = arr.shape[:2]
-
-        return self._render_offscreen(self.pixmap, arr, dst_x, dst_y,
-                                      width, height)
-
     def configure_window(self, width, height):
         self.logger.debug("window size reconfigured to %dx%d" % (
             width, height))
+
         if hasattr(self, 'scene'):
             # By default, a QGraphicsView comes with a 1-pixel margin
             # You will get scrollbars unless you account for this
             # See http://stackoverflow.com/questions/3513788/qt-qgraphicsview-without-scrollbar
             width, height = width - 2, height - 2
             self.scene.setSceneRect(1, 1, width - 2, height - 2)
-        # If we need to build a new pixmap do it here.  We allocate one
-        # twice as big as necessary to prevent having to reinstantiate it
-        # all the time.  On Qt this causes unpleasant flashing in the display.
-        if ((self.pixmap is None) or (self.pixmap.width() < width) or
-                (self.pixmap.height() < height)):
-            pixmap = QPixmap(width * 2, height * 2)
-            #pixmap.fill(QColor("black"))
-            self.pixmap = pixmap
-            self.imgwin.set_pixmap(pixmap)
+
+        # tell renderer about our new size
+        self.renderer.resize((width, height))
+
+        if isinstance(self.renderer.surface, QPixmap):
+            # optimization when Qt is used as the renderer:
+            # renderer surface is already a QPixmap
+            self.pixmap = self.renderer.surface
+            self.imgwin.set_pixmap(self.pixmap)
+
+        else:
+            # If we need to build a new pixmap do it here.  We allocate one
+            # twice as big as necessary to prevent having to reinstantiate it
+            # all the time.  On Qt this causes unpleasant flashing in the display.
+            if ((self.pixmap is None) or (self.pixmap.width() < width) or
+                    (self.pixmap.height() < height)):
+                pixmap = QPixmap(width * 2, height * 2)
+                self.pixmap = pixmap
+                self.imgwin.set_pixmap(pixmap)
 
         self.configure(width, height)
 
@@ -231,7 +205,7 @@ class ImageViewQt(ImageView.ImageViewBase):
         graphics.
         """
         arr = self.getwin_array(order=self.rgb_order)
-        image = self._get_qimage(arr)
+        image = self._get_qimage(arr, self.qimg_fmt)
         return image
 
     def save_plain_image_as_file(self, filepath, format='png', quality=90):
@@ -249,6 +223,43 @@ class ImageViewQt(ImageView.ImageViewBase):
         if (not self.pixmap) or (not self.imgwin):
             return
 
+        if isinstance(self.renderer.surface, QPixmap):
+            # optimization when Qt is used as the renderer:
+            # if renderer surface is already an offscreen QPixmap
+            # then we can update the window directly from it
+            #self.pixmap = self.renderer.surface
+            pass
+
+        else:
+            if isinstance(self.renderer.surface, QImage):
+                # optimization when Qt is used as the renderer:
+                # renderer surface is already a QImage
+                qimage = self.renderer.surface
+
+            else:
+                # otherwise, get the render surface as an array and
+                # convert to a QImage
+                try:
+                    arr = self.renderer.get_surface_as_array(order='BGRA')
+                    qimage = self._get_qimage(arr, QImage.Format_RGB32)
+
+                except Exception as e:
+                    self.logger.error("Error from renderer: %s" % (str(e)))
+                    return
+
+            # copy image from renderer to offscreen pixmap
+            painter = QPainter(self.pixmap)
+            #painter.setWorldMatrixEnabled(True)
+
+            # fill surface with background color
+            size = self.pixmap.size()
+            width, height = size.width(), size.height()
+
+            # draw image data from buffer to offscreen pixmap
+            painter.drawImage(QtCore.QRect(0, 0, width, height),
+                              qimage,
+                              QtCore.QRect(0, 0, width, height))
+
         self.logger.debug("updating window from pixmap")
         if hasattr(self, 'scene'):
             imgwin_wd, imgwin_ht = self.get_window_size()
@@ -256,6 +267,15 @@ class ImageViewQt(ImageView.ImageViewBase):
                                   QtGui.QGraphicsScene.BackgroundLayer)
         else:
             self.imgwin.update()
+
+    def _get_qimage(self, rgb_data, format):
+        rgb_data = np.ascontiguousarray(rgb_data)
+        ht, wd, channels = rgb_data.shape
+
+        result = QImage(rgb_data.data, wd, ht, format)
+        # Need to hang on to a reference to the array
+        result.ndarray = rgb_data
+        return result
 
     def set_cursor(self, cursor):
         if self.imgwin is not None:
@@ -292,25 +312,14 @@ class ImageViewQt(ImageView.ImageViewBase):
     def make_timer(self):
         return Timer()
 
-    def _get_qimage(self, bgra):
-        h, w, channels = bgra.shape
-
-        fmt = QImage.Format_ARGB32
-        result = QImage(bgra.data, w, h, fmt)
-        # Need to hang on to a reference to the array
-        result.ndarray = bgra
-        return result
-
-    def _get_color(self, r, g, b):
-        n = 255.0
-        clr = QColor(int(r * n), int(g * n), int(b * n))
-        return clr
-
     def onscreen_message(self, text, delay=None, redraw=True):
         self.msgtimer.stop()
         self.set_onscreen_message(text, redraw=redraw)
         if delay is not None:
             self.msgtimer.start(delay)
+
+    def take_focus(self):
+        self.imgwin.setFocus()
 
 
 class RenderMixin(object):
@@ -408,9 +417,6 @@ class QtEventMixin(object):
         #imgwin.grabGesture(QtCore.Qt.TapGesture)
         #imgwin.grabGesture(QtCore.Qt.TapAndHoldGesture)
 
-        # Does widget accept focus when mouse enters window
-        self.enter_focus = self.t_.get('enter_focus', True)
-
         # Define cursors
         for curname, filename in (('pan', 'openHandCursor.png'),
                                   ('pick', 'thinCrossCursor.png')):
@@ -440,9 +446,6 @@ class QtEventMixin(object):
                      'pinch', 'pan',  # 'swipe', 'tap'
                      ):
             self.enable_callback(name)
-
-    def set_enter_focus(self, tf):
-        self.enter_focus = tf
 
     def transkey(self, keycode, keyname):
         self.logger.debug("keycode=%d keyname='%s'" % (
@@ -492,7 +495,7 @@ class QtEventMixin(object):
         except KeyError:
             return keyname
 
-    def get_keyTable(self):
+    def get_key_table(self):
         return self._keytbl
 
     def map_event(self, widget, event):
@@ -508,7 +511,13 @@ class QtEventMixin(object):
         return self.make_callback('focus', hasFocus)
 
     def enter_notify_event(self, widget, event):
-        if self.enter_focus:
+        if hasattr(event, 'x'):
+            # only Qt5 apparently?
+            self.last_win_x, self.last_win_y = event.x(), event.y()
+            self.check_cursor_location()
+
+        enter_focus = self.t_.get('enter_focus', False)
+        if enter_focus:
             widget.setFocus()
         return self.make_callback('enter')
 
@@ -542,6 +551,10 @@ class QtEventMixin(object):
             button |= 0x2
         if buttons & QtCore.Qt.RightButton:
             button |= 0x4
+        if buttons & QtCore.Qt.BackButton:
+            button |= 0x8
+        if buttons & QtCore.Qt.ForwardButton:
+            button |= 0x10
         self.logger.debug("button down event at %dx%d, button=%x" % (x, y, button))
 
         data_x, data_y = self.check_cursor_location()
@@ -561,6 +574,10 @@ class QtEventMixin(object):
             button |= 0x2
         if buttons & QtCore.Qt.RightButton:
             button |= 0x4
+        if buttons & QtCore.Qt.BackButton:
+            button |= 0x8
+        if buttons & QtCore.Qt.ForwardButton:
+            button |= 0x10
 
         data_x, data_y = self.check_cursor_location()
 
@@ -712,10 +729,7 @@ class QtEventMixin(object):
         self.logger.debug("available formats of dropped data are %s" % (
             formats))
         if "text/thumb" in formats:
-            if six.PY2:
-                thumbstr = str(dropdata.data("text/thumb"))
-            else:
-                thumbstr = str(dropdata.data("text/thumb"), encoding='ascii')
+            thumbstr = str(dropdata.data("text/thumb"), encoding='ascii')
             data = [thumbstr]
             self.logger.debug("dropped thumb(s): %s" % (str(data)))
         elif dropdata.hasUrls():
@@ -857,7 +871,7 @@ class ScrolledView(QtGui.QAbstractScrollArea):
 
         self.viewer.add_callback('redraw', self._calc_scrollbars)
         self.viewer.add_callback('limits-set',
-                                 lambda v, l: self._calc_scrollbars(v))
+                                 lambda v, l: self._calc_scrollbars(v, 0))
 
     def get_widget(self):
         return self
@@ -873,11 +887,11 @@ class ScrolledView(QtGui.QAbstractScrollArea):
 
         self.v_w.resize(width, height)
 
-    def _calc_scrollbars(self, viewer):
+    def _calc_scrollbars(self, viewer, whence):
         """Calculate and set the scrollbar handles from the pan and
         zoom positions.
         """
-        if self._scrolling:
+        if self._scrolling or whence > 0:
             return
 
         # flag that suppresses a cyclical callback
@@ -938,6 +952,9 @@ class ScrolledView(QtGui.QAbstractScrollArea):
 
             bd = self.viewer.get_bindings()
             bd.pan_by_pct(self.viewer, pct_x, pct_y, pad=self.pad)
+
+            # This shouldn't be necessary, but seems to be
+            self.viewer.redraw(whence=0)
 
         finally:
             self._scrolling = False

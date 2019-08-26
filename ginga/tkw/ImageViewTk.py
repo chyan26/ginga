@@ -3,10 +3,7 @@
 #
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
-from __future__ import absolute_import
-
-from ginga.util import six
-
+#
 import PIL.Image as PILimage
 
 have_pil_imagetk = False
@@ -15,10 +12,7 @@ try:
     from PIL.ImageTk import PhotoImage
     have_pil_imagetk = True
 except ImportError:
-    if six.PY2:
-        from Tkinter import PhotoImage
-    else:
-        from tkinter import PhotoImage
+    from tkinter import PhotoImage
 
 from ginga import Mixins, Bindings  # noqa
 from ginga.canvas.mixins import DrawingMixin, CanvasMixin, CompoundMixin  # noqa
@@ -106,14 +100,13 @@ class ImageViewTk(ImageView):
 
         if have_pil_imagetk:
             # Get surface as a numpy array
-            arr8 = self.get_image_as_array()
+            arr8 = self.renderer.get_surface_as_array(order='RGB')
             image = PILimage.fromarray(arr8)
             photo = PhotoImage(image)
 
         else:
             # fallback to a little slower method--make a PNG image
-            buf = self.get_rgb_image_as_buffer(format='png')
-            image = buf.getvalue()
+            image = self.get_surface_as_rgb_format_bytes(format='png')
             photo = PhotoImage(data=image)
 
         # hang on to a reference otherwise it gets gc'd
@@ -147,15 +140,15 @@ class ImageViewTk(ImageView):
         if delay is not None:
             self.msgtask.start(delay)
 
+    def take_focus(self):
+        self.tkcanvas.focus_set()
+
 
 class ImageViewEvent(ImageViewTk):
 
     def __init__(self, logger=None, rgbmap=None, settings=None):
         ImageViewTk.__init__(self, logger=logger, rgbmap=rgbmap,
                              settings=settings)
-
-        # Does widget accept focus when mouse enters window
-        self.enter_focus = self.t_.get('enter_focus', True)
 
         self._button = 0
 
@@ -270,17 +263,16 @@ class ImageViewEvent(ImageViewTk):
         except KeyError:
             return keyname
 
-    def get_keyTable(self):
+    def get_key_table(self):
         return self._keytbl
-
-    def set_enter_focus(self, tf):
-        self.enter_focus = tf
 
     def focus_event(self, event, hasFocus):
         return self.make_callback('focus', hasFocus)
 
     def enter_notify_event(self, event):
-        if self.enter_focus:
+        # Does widget accept focus when mouse enters window
+        enter_focus = self.t_.get('enter_focus', False)
+        if enter_focus:
             self.tkcanvas.focus_set()
         return self.make_callback('enter')
 
@@ -321,13 +313,13 @@ class ImageViewEvent(ImageViewTk):
                     # down
                     direction = 180.0
                 # 15 deg is standard 1-click turn for a wheel mouse
-                numDegrees = 15.0
+                num_degrees = 15.0
                 self.logger.debug("scroll deg=%f direction=%f" % (
-                    numDegrees, direction))
+                    num_degrees, direction))
 
                 data_x, data_y = self.check_cursor_location()
 
-                return self.make_ui_callback('scroll', direction, numDegrees,
+                return self.make_ui_callback('scroll', direction, num_degrees,
                                              data_x, data_y)
 
             button |= 0x1 << (event.num - 1)
@@ -405,7 +397,7 @@ class ImageViewZoom(Mixins.UIMixin, ImageViewEvent):
                                 settings=settings)
         Mixins.UIMixin.__init__(self)
 
-        self.ui_setActive(True)
+        self.ui_set_active(True)
 
         if bindmap is None:
             bindmap = ImageViewZoom.bindmapClass(self.logger)

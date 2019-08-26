@@ -156,7 +156,7 @@ class Image(OnePointMixin, CanvasObjectBase):
             # get destination location in data_coords
             dst_x, dst_y = self.crdmap.to_data((self.x, self.y))
 
-            a1, b1, a2, b2 = 0, 0, self.image.width, self.image.height
+            a1, b1, a2, b2 = 0, 0, self.image.width - 1, self.image.height - 1
 
             # calculate the cutout that we can make and scale to merge
             # onto the final image--by only cutting out what is necessary
@@ -216,7 +216,7 @@ class Image(OnePointMixin, CanvasObjectBase):
         # calculated position
         trcalc.overlay_image(dstarr, cache.cvs_pos, cache.cutout,
                              dst_order=dst_order, src_order=image_order,
-                             alpha=self.alpha, flipy=False)
+                             alpha=self.alpha, fill=True, flipy=False)
 
     def _reset_cache(self, cache):
         cache.setvals(cutout=None, drawn=False, cvs_pos=(0, 0))
@@ -399,7 +399,7 @@ class NormImage(Image):
             # destination location in data_coords
             dst_x, dst_y = self.crdmap.to_data((self.x, self.y))
 
-            a1, b1, a2, b2 = 0, 0, self.image.width, self.image.height
+            a1, b1, a2, b2 = 0, 0, self.image.width - 1, self.image.height - 1
 
             # calculate the cutout that we can make and scale to merge
             # onto the final image--by only cutting out what is necessary
@@ -461,6 +461,8 @@ class NormImage(Image):
         dst_order = viewer.get_rgb_order()
         image_order = self.image.get_order()
         get_order = dst_order
+        # note: is this still needed?  I think overlay_image will handle
+        # a mismatch of alpha channel now
         if ('A' in dst_order) and not ('A' in image_order):
             get_order = dst_order.replace('A', '')
 
@@ -474,7 +476,7 @@ class NormImage(Image):
         # calculated position
         trcalc.overlay_image(dstarr, cache.cvs_pos, cache.rgbarr,
                              dst_order=dst_order, src_order=get_order,
-                             alpha=self.alpha, flipy=False)
+                             alpha=self.alpha, fill=True, flipy=False)
 
     def apply_visuals(self, viewer, data, vmin, vmax):
         if self.autocuts is not None:

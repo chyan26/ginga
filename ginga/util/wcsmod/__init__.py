@@ -54,7 +54,7 @@ display_types = ['sexagesimal', 'degrees']
 
 # try to load them in this order until we find one that works.
 # If none can be loaded, we default to the BareBones dummy WCS
-wcs_try_order = ('astropy', 'astropy2', 'kapteyn', 'starlink', 'astlib',
+wcs_try_order = ('astropy', 'astropy_ape14', 'kapteyn', 'starlink', 'astlib',
                  'barebones')
 
 wcs_home = os.path.split(sys.modules[__name__].__file__)[0]
@@ -105,5 +105,12 @@ if not wcs_configured:
 
 def get_wcs_wrappers():
     return list(common.custom_wcs.keys())
+
+
+def get_wcs_class(name):
+    """Get a WCS class corresponding to the registered name.
+    Will raise a KeyError if a class of the given name does not exist.
+    """
+    return common.custom_wcs[name]
 
 # END

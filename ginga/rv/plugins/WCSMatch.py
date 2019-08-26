@@ -1,5 +1,7 @@
+#
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
+#
 """
 ``WCSMatch`` is a global plugin for the Ginga image viewer that allows
 you to roughly align images with different scales and orientations
@@ -14,10 +16,15 @@ using the images' World Coordinate System (WCS) for viewing purposes.
 To use, simply start the plugin, and from the plugin GUI select a
 channel from the drop-down menu labeled "Reference Channel".  The
 image contained in that channel will be used as a reference for
-zooming and orienting the images in the other channels.
+synchronizing the images in the other channels.
 
-The channels will be synchronized in viewing (zoom, pan, rotate, and
-transform).  To "unlock" the synchronization, simply select "None"
+The channels will be synchronized in viewing (pan, scale (zoom),
+transforms (flips) and rotation.  The checkboxes "Match Pan",
+"Match Scale", "Match Transforms" and "Match Rotation" can be
+checked or not to control which attributes are synchronized between
+channels.
+
+To completely "unlock" the synchronization, simply select "None"
 from the "Reference Channel" drop-down menu.
 
 Currently, there is no way to limit the channels that are affected
@@ -43,6 +50,8 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
         self.ref_image = None
         self.gui_up = False
         self._cur_opn_viewer = None
+        self._match = dict(pan=True, scale=True, transforms=True,
+                           rotation=True)
 
         fv.add_callback('add-channel', self.add_channel)
         fv.add_callback('delete-channel', self.delete_channel)
@@ -57,13 +66,33 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
 
         fr = Widgets.Frame("WCS Match")
 
-        captions = ((' Reference Channel:', 'label',
+        captions = (('Reference Channel:', 'label',
                      'ref channel', 'combobox'),
+                    ('Match Pan', 'checkbutton',
+                     'Match Scale', 'checkbutton'),
+                    ('Match Transforms', 'checkbutton',
+                    'Match Rotation', 'checkbutton'),
                     )
         w, b = Widgets.build_info(captions, orientation=orientation)
         self.w = b
 
-        b.ref_channel.add_callback('activated', self.set_reference_channel_cb)
+        b.ref_channel.add_callback('activated', self._set_reference_channel_cb)
+        self.w.match_pan.set_state(self._match['pan'])
+        self.w.match_pan.set_tooltip("Match pan position of reference image")
+        self.w.match_pan.add_callback('activated',
+                                      self.set_match_cb, 'pan')
+        self.w.match_scale.set_state(self._match['scale'])
+        self.w.match_scale.add_callback('activated',
+                                        self.set_match_cb, 'scale')
+        self.w.match_scale.set_tooltip("Match scale of reference image")
+        self.w.match_transforms.set_state(self._match['transforms'])
+        self.w.match_transforms.add_callback('activated',
+                                             self.set_match_cb, 'transforms')
+        self.w.match_transforms.set_tooltip("Match transforms of reference image")
+        self.w.match_rotation.set_state(self._match['rotation'])
+        self.w.match_rotation.add_callback('activated',
+                                           self.set_match_cb, 'rotation')
+        self.w.match_rotation.set_tooltip("Match rotation of reference image")
 
         fr.set_widget(w)
         vbox.add_widget(fr, stretch=0)
@@ -128,11 +157,24 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
 
     # CALLBACKS
 
-    def set_reference_channel_cb(self, w, idx):
-        chname = self.chnames[idx]
+    def _update_all(self):
+        if self.ref_channel is None:
+            return
+        chinfo = self.ref_channel
+        chviewer = chinfo.fitsimage
+        self.zoomset(chviewer, chinfo)
+        self.rotset(chviewer, chinfo)
+        self.xfmset(chviewer, chinfo)
+        self.panset(chviewer, chinfo)
+
+    def _set_reference_channel(self, chname):
         if chname == 'None':
+            chname = None
+        if chname is None:
             self.ref_image = None
             self.ref_channel = None
+            self.logger.info("turning off channel synchronization")
+            return
 
         chinfo = self.fv.get_channel(chname)
         self.ref_channel = chinfo
@@ -143,12 +185,36 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
         # reference image
         chviewer.set_scale_base_xy(1.0, 1.0)
 
-        self.scale_all_relative(chviewer, chinfo)
-        self.rotate_all_relative(chviewer, chinfo)
-        self.transform_all_relative(chviewer, chinfo)
-        self.pan_all_relative(chviewer, chinfo)
+        self._update_all()
 
         self.logger.info("set reference channel to '%s'" % (chname))
+
+    def _set_reference_channel_cb(self, w, idx):
+        """This is the GUI callback for the control that sets the reference
+        channel.
+        """
+        chname = self.chnames[idx]
+        self._set_reference_channel(chname)
+
+    def set_reference_channel(self, chname):
+        """This is the API call to set the reference channel.
+        """
+        # change the GUI control to match
+        idx = self.chnames.index(str(chname))
+        self.w.ref_channel.set_index(idx)
+        return self._set_reference_channel(chname)
+
+    def set_match_cb(self, w, tf, key):
+        # remember, in case we are closed and reopened
+        self._match.update(dict(pan=self.w.match_pan.get_state(),
+                                scale=self.w.match_scale.get_state(),
+                                transforms=self.w.match_transforms.get_state(),
+                                rotation=self.w.match_rotation.get_state()))
+
+        if key == 'scale' and tf is False:
+            self.reset_scale_skew()
+
+        self._update_all()
 
     def close(self):
         self.fv.stop_global_plugin(str(self))
@@ -168,21 +234,21 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
     def zoomset_cb(self, setting, value, chviewer, info):
         """This callback is called when a channel window is zoomed.
         """
+        return self.zoomset(chviewer, info.chinfo)
+
+    def zoomset(self, chviewer, chinfo):
         # Don't do anything if we are not active
         if not self.gui_up or self.ref_image is None:
             return
 
-        # if this is not a zoom event from the focus window then
-        # don't do anything
-        ## focus_chviewer = self.fv.getfocus_viewer()
-        ## if chviewer != focus_chviewer:
-        ##     return
         if self._cur_opn_viewer is not None:
+            return
+        if not self._match['scale']:
             return
 
         self._cur_opn_viewer = chviewer
         try:
-            self.scale_all_relative(chviewer, info.chinfo)
+            self.scale_all_relative(chviewer, chinfo)
 
         finally:
             self._cur_opn_viewer = None
@@ -198,7 +264,6 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
                          "%f,%f" % (chinfo.name, ort.rscale_x, ort.rscale_y))
 
         scale_x, scale_y = chviewer.get_scale_xy()
-        #scale_x, scale_y = value
 
         chg_x, chg_y = scale_x / ort.rscale_x, scale_y / ort.rscale_y
         self.logger.info("scale changed for channel '%s' by %f,%f" % (
@@ -222,24 +287,35 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
                 chinfo2.name, new_scale_x, new_scale_y))
             chinfo2.fitsimage.scale_to(new_scale_x, new_scale_y)
 
+    def reset_scale_skew(self):
+        """Set the X/Y scaling factors to be equal in each channel.
+        """
+        chnames = self.fv.get_channel_names()
+        for chname in chnames:
+            chinfo = self.fv.get_channel(chname)
+
+            scales = chinfo.fitsimage.get_scale_xy()
+            fac = min(*scales)
+            chinfo.fitsimage.scale_to(fac, fac)
+
     def rotset_cb(self, setting, value, chviewer, info):
         """This callback is called when a channel window is rotated.
         """
+        return self.rotset(chviewer, info.chinfo)
+
+    def rotset(self, chviewer, chinfo):
         # Don't do anything if we are not active
         if not self.gui_up or self.ref_image is None:
             return
 
-        # if this is not a zoom event from the focus window then
-        # don't do anything
-        ## focus_chviewer = self.fv.getfocus_viewer()
-        ## if chviewer != focus_chviewer:
-        ##     return
         if self._cur_opn_viewer is not None:
+            return
+        if not self._match['rotation']:
             return
 
         self._cur_opn_viewer = chviewer
         try:
-            self.rotate_all_relative(chviewer, info.chinfo)
+            self.rotate_all_relative(chviewer, chinfo)
 
         finally:
             self._cur_opn_viewer = None
@@ -282,21 +358,21 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
     def panset_cb(self, setting, value, chviewer, info):
         """This callback is called when a channel window is panned.
         """
+        return self.panset(chviewer, info.chinfo)
+
+    def panset(self, chviewer, chinfo):
         # Don't do anything if we are not active
         if not self.gui_up or self.ref_image is None:
             return
 
-        # if this is not a zoom event from the focus window then
-        # don't do anything
-        ## focus_chviewer = self.fv.getfocus_viewer()
-        ## if chviewer != focus_chviewer:
-        ##     return
         if self._cur_opn_viewer is not None:
+            return
+        if not self._match['pan']:
             return
 
         self._cur_opn_viewer = chviewer
         try:
-            self.pan_all_relative(chviewer, info.chinfo)
+            self.pan_all_relative(chviewer, chinfo)
 
         finally:
             self._cur_opn_viewer = None
@@ -327,21 +403,21 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
         """This callback is called when a channel window is transformed
         (flipped, or swap axes).
         """
+        return self.xfmset(chviewer, info.chinfo)
+
+    def xfmset(self, chviewer, chinfo):
         # Don't do anything if we are not active
         if not self.gui_up or self.ref_image is None:
             return
 
-        # if this is not a zoom event from the focus window then
-        # don't do anything
-        ## focus_chviewer = self.fv.getfocus_chviewer()
-        ## if chviewer != focus_chviewer:
-        ##     return
         if self._cur_opn_viewer is not None:
+            return
+        if not self._match['transforms']:
             return
 
         self._cur_opn_viewer = chviewer
         try:
-            self.transform_all_relative(chviewer, info.chinfo)
+            self.transform_all_relative(chviewer, chinfo)
 
         finally:
             self._cur_opn_viewer = None
@@ -366,30 +442,6 @@ class WCSMatch(GingaPlugin.GlobalPlugin):
             if image is None:
                 continue
             chinfo2.fitsimage.transform(flip_x, flip_y, swap_xy)
-
-    #def redo(self, channel, image):
-    #    info = channel.extdata._wcsmatch_info
-    #    self.logger.info("Channel '%s' setting image" % (info.chinfo.name))
-    #    if info.chinfo == self.ref_channel:
-    #        self.ref_image = image
-    #    return True
-
-    def redo(self):
-        if self.ref_image is None:
-            # no reference image
-            return
-
-        chinfo = self.fv.get_channel_info()
-        viewer = chinfo.fitsimage
-
-        image = viewer.get_image()
-        ## if image == self.ref_image:
-        ##     # current image is same as reference image
-        ##     return
-
-        info = wcs.get_relative_orientation(image, self.ref_image)
-        self.logger.info("rscale_x=%f rscale_y=%f rrot_deg=%f" % (
-            info.rscale_x, info.rscale_y, info.rrot_deg))
 
     def __str__(self):
         return 'wcsmatch'

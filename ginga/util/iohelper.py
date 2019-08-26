@@ -8,9 +8,11 @@ import os
 import re
 import hashlib
 import mimetypes
+import pathlib
+import urllib.parse
+import tempfile
 
 from ginga.misc import Bunch
-from ginga.util.six.moves import urllib_parse
 
 magic_tester = None
 try:
@@ -27,11 +29,32 @@ except (ImportError, Exception):
     have_magic = False
 
 
+known_types = {
+    '.fits': 'image/fits',
+    '.asdf': 'image/asdf',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.tiff': 'image/tiff',
+    '.gif': 'image/gif',
+    '.png': 'image/png',
+    '.ppm': 'image/ppm',
+    '.pnm': 'image/pnm',
+    '.pbm': 'image/pbm',
+}
+
+
 def guess_filetype(filepath):
     """Guess the type of a file."""
     # If we have python-magic, use it to determine file type
     typ = None
-    if have_magic:
+
+    # Some specific checks for known file suffixes
+    _fn = filepath.lower()
+    _name, _ext = os.path.splitext(_fn)
+    if _ext in known_types:
+        typ = known_types[_ext]
+
+    if typ is None and have_magic:
         try:
             # it seems there are conflicting versions of a 'magic'
             # module for python floating around...*sigh*
@@ -62,16 +85,33 @@ def guess_filetype(filepath):
     raise ValueError("Can't determine file type of '%s'" % (filepath))
 
 
-def get_fileinfo(filespec, cache_dir='/tmp', download=False):
+def get_download_path(uri, filename, cache_dir):
+
+    # TODO: cache file by uri and timestamp
+    filepath = os.path.join(cache_dir, filename)
+
+    # find a free local copy of the file
+    count, tmpfile = 1, filepath
+    while os.path.exists(tmpfile):
+        pfx, sfx = os.path.splitext(filepath)
+        tmpfile = pfx + '_' + str(count) + sfx
+        count += 1
+    return tmpfile
+
+
+def get_fileinfo(filespec, cache_dir=None):
     """
     Parse a file specification and return information about it.
     """
+    if cache_dir is None:
+        cache_dir = tempfile.gettempdir()
+
     # Loads first science extension by default.
     # This prevents [None] to be loaded instead.
     idx = None
     name_ext = ''
 
-    # User specified an HDU using bracket notation at end of path?
+    # User specified an index using bracket notation at end of path?
     match = re.match(r'^(.+)\[(.+)\]$', filespec)
     if match:
         filespec = match.group(1)
@@ -79,9 +119,13 @@ def get_fileinfo(filespec, cache_dir='/tmp', download=False):
         if ',' in idx:
             hduname, extver = idx.split(',')
             hduname = hduname.strip()
-            extver = int(extver)
-            idx = (hduname, extver)
-            name_ext = "[%s,%d]" % idx
+            if re.match(r'^\d+$', extver):
+                extver = int(extver)
+                idx = (hduname, extver)
+                name_ext = "[%s,%d]" % idx
+            else:
+                idx = idx.strip()
+                name_ext = "[%s]" % idx
         else:
             if re.match(r'^\d+$', idx):
                 idx = int(idx)
@@ -98,26 +142,19 @@ def get_fileinfo(filespec, cache_dir='/tmp', download=False):
     # Does this look like a URL?
     match = re.match(r"^(\w+)://(.+)$", filespec)
     if match:
-        urlinfo = urllib_parse.urlparse(filespec)
+        urlinfo = urllib.parse.urlparse(filespec)
         if urlinfo.scheme == 'file':
             # local file
-            filepath = urlinfo.path
-            match = re.match(r"^/(\w+\:)", filepath)
-            if match:
-                # This is a windows path with a drive letter?
-                # strip the leading slash
-                # NOTE: this seems like it should not be necessary and might
-                # break some cases
-                filepath = filepath[1:]
+            filepath = str(pathlib.Path(urlinfo.path))
 
         else:
             path, filename = os.path.split(urlinfo.path)
-            filepath = os.path.join(cache_dir, filename)
+            filepath = get_download_path(url, filename, cache_dir)
 
     else:
         # Not a URL
         filepath = filespec
-        url = "file://" + filepath
+        url = pathlib.Path(os.path.abspath(filepath)).as_uri()
 
     ondisk = os.path.exists(filepath)
 
@@ -126,7 +163,7 @@ def get_fileinfo(filespec, cache_dir='/tmp', download=False):
     name = fname_pfx + name_ext
 
     res = Bunch.Bunch(filepath=filepath, url=url, numhdu=idx,
-                      name=name, ondisk=ondisk)
+                      name=name, idx=name_ext, ondisk=ondisk)
     return res
 
 

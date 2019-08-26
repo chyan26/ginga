@@ -10,7 +10,6 @@ import traceback
 
 from ginga.gw import Widgets
 from ginga.misc import Bunch, Callback
-from ginga.util.six.moves import filter
 
 
 class PluginManagerError(Exception):
@@ -267,24 +266,29 @@ class PluginManager(Callback.Callbacks):
             self.fv.show_error("No plugin information for plugin '%s'" % (
                 opname))
             return
+
         if chname is not None:
             # local plugin
-            plname = chname.upper() + ': ' + p_info.name
+            plname = chname.upper() + ': ' + p_info.spec.get('tab', p_info.name)
+            p_info.tabname = plname
         else:
             # global plugin
             plname = p_info.name
+            p_info.tabname = p_info.spec.get('tab', plname)
+
         lname = p_info.name.lower()
+
         if lname in self.active:
+            # <-- plugin is supposedly already active
             if alreadyOpenOk:
                 self.set_focus(p_info.name)
                 return
+
             raise PluginManagerError("Plugin %s is already active." % (
                 plname))
 
-        # Raise tab with GUI
-        p_info.tabname = p_info.spec.get('tab', plname)
+        # Build GUI phase
         vbox = None
-        had_error = False
         try:
             if hasattr(p_info.obj, 'build_gui'):
                 vbox = Widgets.VBox()
@@ -323,32 +327,33 @@ class PluginManager(Callback.Callbacks):
                 tb_str = "Traceback information unavailable."
                 self.logger.error(tb_str)
 
-            self.plugin_build_error(vbox, errstr + '\n' + tb_str)
+            self.fv.show_error(errstr + '\n' + tb_str)
             #raise PluginManagerError(e)
+            return
 
-        if not had_error:
+        # start phase
+        try:
+            if future:
+                p_info.obj.start(future=future)
+            else:
+                p_info.obj.start()
+
+        except Exception as e:
+            errstr = "Plugin failed to start correctly: %s" % (
+                str(e))
+            self.logger.error(errstr)
             try:
-                if future:
-                    p_info.obj.start(future=future)
-                else:
-                    p_info.obj.start()
+                (type, value, tb) = sys.exc_info()
+                tb_str = "".join(traceback.format_tb(tb))
+                self.logger.error("Traceback:\n%s" % (tb_str))
 
             except Exception as e:
-                had_error = True
-                errstr = "Plugin failed to start correctly: %s" % (
-                    str(e))
-                self.logger.error(errstr)
-                try:
-                    (type, value, tb) = sys.exc_info()
-                    tb_str = "".join(traceback.format_tb(tb))
-                    self.logger.error("Traceback:\n%s" % (tb_str))
+                tb_str = "Traceback information unavailable."
+                self.logger.error(tb_str)
 
-                except Exception as e:
-                    tb_str = "Traceback information unavailable."
-                    self.logger.error(tb_str)
-
-                self.plugin_build_error(vbox, errstr + '\n' + tb_str)
-                #raise PluginManagerError(e)
+            self.fv.show_error(errstr + '\n' + tb_str)
+            #raise PluginManagerError(e)
+            return
 
         if vbox is not None:
             self.finish_gui(p_info, vbox)
@@ -356,6 +361,7 @@ class PluginManager(Callback.Callbacks):
             self.activate(p_info)
             self.set_focus(p_info.name)
         else:
+            self.activate(p_info)
             # If this is a local plugin, raise the channel associated with the
             # plug in
             if p_info.chinfo is not None:
@@ -437,7 +443,12 @@ class PluginManager(Callback.Callbacks):
                 self.ds.show_dialog(dialog)
 
             else:
-                self.ds.add_tab(in_ws, vbox, 2, p_info.tabname, p_info.tabname)
+                bnch = self.ds.add_tab(in_ws, vbox, 2, p_info.tabname,
+                                       p_info.tabname)
+                bnch.plugin_info = p_info
+
+                ws = self.ds.get_ws(in_ws)
+                ws.add_callback('page-close', self.tab_closed_cb)
 
                 ws_w = self.ds.get_nb(in_ws)
                 ws_w.add_callback('page-switch', self.tab_switched_cb)
@@ -477,6 +488,13 @@ class PluginManager(Callback.Callbacks):
                     # over to the new channel
                     #self.ds.raise_tab(chname)
                     self.fv.change_channel(chname)
+
+    def tab_closed_cb(self, ws, widget):
+        bnch = self.ds._find_tab(widget)
+        if bnch is not None:
+            p_info = bnch.get('plugin_info', None)
+            if p_info is not None:
+                self.deactivate(p_info.name)
 
     def dispose_gui(self, p_info):
         self.logger.debug("disposing of gui")

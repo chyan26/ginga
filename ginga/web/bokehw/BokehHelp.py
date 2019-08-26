@@ -1,9 +1,6 @@
 #
 # BokehHelp.py -- help classes for Bokeh drawing
 #
-# Eric Jeschke (eric@naoj.org)
-#
-# Copyright (c)  Eric R. Jeschke.  All rights reserved.
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 
@@ -68,7 +65,7 @@ class BokehContext(object):
     def update_font(self, pen, font):
         self.kwdargs['text_font'] = font.fontname
         # Bokeh expects font size specified as a string
-        self.kwdargs['text_font_size'] = str(font.fontsize)
+        self.kwdargs['text_font_size'] = "%dpt" % (int(font.fontsize))
         self.kwdargs['text_color'] = pen.color
 
     def get_color(self, color, alpha):

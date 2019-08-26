@@ -5,7 +5,6 @@
 # Please see the file LICENSE.txt for details.
 #
 """This module handles the main reference viewer."""
-from __future__ import print_function
 
 # stdlib imports
 import glob
@@ -69,79 +68,98 @@ default_layout = ['seq', {},
                     dict(row=['hbox', dict(name='status')], stretch=0),
                     ]]
 
-global_plugins = [
+plugins = [
+    # hidden plugins, started at program initialization
     Bunch(module='Operations', workspace='operations', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Operations [G]",
+          ptype='global'),
     Bunch(module='Toolbar', workspace='toolbar', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Toolbar [G]", ptype='global'),
     Bunch(module='Pan', workspace='uleft', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Pan [G]", ptype='global'),
     Bunch(module='Info', tab='Synopsis', workspace='lleft', start=True,
-          hidden=True, category='system'),
-    Bunch(module='Header', tab='Header', workspace='left', start=True,
-          hidden=True, category='system'),
-    Bunch(module='Zoom', tab='Zoom', workspace='left', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Info [G]", ptype='global'),
     Bunch(module='Thumbs', tab='Thumbs', workspace='right', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Thumbs [G]", ptype='global'),
     Bunch(module='Contents', tab='Contents', workspace='right', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Contents [G]", ptype='global'),
     Bunch(module='Colorbar', workspace='cbar', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Colorbar [G]", ptype='global'),
     Bunch(module='Cursor', workspace='readout', start=True,
-          hidden=True, category='system'),
+          hidden=True, category='System', menu="Cursor [G]", ptype='global'),
     Bunch(module='Errors', tab='Errors', workspace='right', start=True,
-          hidden=True, category='system'),
-    Bunch(module='Command', tab='Command', workspace='lleft', start=False,
-          category='Global'),
-    Bunch(module='WBrowser', tab='Help', workspace='channels', start=False,
-          category='Global'),
-    Bunch(module='FBrowser', tab='Open File', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='Blink', tab='Blink Channels', workspace='right', start=False,
-          menu="Blink Channels", category='Global'),
-    Bunch(module='ColorMapPicker', tab='Color Map Picker', workspace='right',
-          start=False, category='Global'),
-    # TODO: Move SaveImage to File menu.
-    Bunch(module='SaveImage', tab='Save File', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='RC', tab='RC', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='WCSMatch', tab='WCSMatch', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='ChangeHistory', tab='History', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='SAMP', tab='SAMP', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='IRAF', tab='IRAF', workspace='right', start=False,
-          category='Global'),
-    Bunch(module='Log', tab='Log', workspace='right', start=False,
-          category='Global'),
-]
+          hidden=True, category='System', menu="Errors [G]", ptype='global'),
+    Bunch(module='Downloads', tab='Downloads', workspace='right', start=False,
+          menu="Downloads [G]", category='Utils', ptype='global'),
 
-local_plugins = [
-    Bunch(module='Pick', workspace='dialogs', category=None),
-    Bunch(module='Ruler', workspace='dialogs', category=None),
-    Bunch(module='MultiDim', workspace='lleft', category=None),
-    Bunch(module='Cuts', workspace='dialogs', category=None),
-    Bunch(module='Histogram', workspace='dialogs', category=None),
-    Bunch(module='Crosshair', workspace='dialogs', category=None),
-    Bunch(module='Overlays', workspace='dialogs', category=None),
-    Bunch(module='WCSAxes', workspace='dialogs', category=None),
-    Bunch(module='TVMark', workspace='dialogs', category=None),
-    Bunch(module='TVMask', workspace='dialogs', category=None),
+    # optional, user-started plugins
+    Bunch(module='Blink', tab='Blink Channels', workspace='right', start=False,
+          menu="Blink Channels [G]", category='Analysis', ptype='global'),
     Bunch(module='Blink', workspace='dialogs', menu='Blink Images',
-          category=None),
-    Bunch(module='LineProfile', workspace='dialogs', category=None),
-    Bunch(module='PixTable', workspace='dialogs', category=None),
-    Bunch(module='Preferences', workspace='dialogs', category=None),
-    Bunch(module='Catalogs', workspace='dialogs', category=None),
-    Bunch(module='Mosaic', workspace='dialogs', category=None),
-    Bunch(module='Drawing', workspace='dialogs', category=None),
-    Bunch(module='FBrowser', workspace='dialogs', category=None),
-    Bunch(module='Compose', workspace='dialogs', category=None),
-    Bunch(module='PlotTable', workspace='dialogs', category=None),
-    Bunch(module='ScreenShot', workspace='dialogs', category=None),
+          category='Analysis', ptype='local'),
+    Bunch(module='Cuts', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='LineProfile', workspace='dialogs',
+          category='Analysis.Datacube', ptype='local'),
+    Bunch(module='Histogram', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='Overlays', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='Pick', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='PixTable', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='TVMark', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='TVMask', workspace='dialogs', category='Analysis',
+          ptype='local'),
+    Bunch(module='WCSMatch', tab='WCSMatch', workspace='right', start=False,
+          menu="WCS Match [G]", category='Analysis', ptype='global'),
+    Bunch(module='Command', tab='Command', workspace='lleft', start=False,
+          menu="Command Line [G]", category='Debug', ptype='global'),
+    Bunch(module='Log', tab='Log', workspace='right', start=False,
+          menu="Logger Info [G]", category='Debug', ptype='global'),
+    Bunch(module='MultiDim', workspace='lleft', category='Navigation',
+          ptype='local'),
+    Bunch(module='RC', tab='RC', workspace='right', start=False,
+          menu="Remote Control [G]", category='Remote', ptype='global'),
+    Bunch(module='SAMP', tab='SAMP', workspace='right', start=False,
+          menu="SAMP Client [G]", category='Remote', ptype='global'),
+    Bunch(module='Compose', workspace='dialogs', category='RGB', ptype='local'),
+    Bunch(module='ScreenShot', workspace='dialogs', category='RGB',
+          ptype='local'),
+    Bunch(module='ColorMapPicker', tab='ColorMapPicker',
+          menu="Set Color Map [G]", workspace='right', start=False,
+          category='RGB', ptype='global'),
+    Bunch(module='PlotTable', workspace='dialogs', category='Table',
+          ptype='local'),
+    Bunch(module='Catalogs', workspace='dialogs', category='Utils',
+          ptype='local'),
+    Bunch(module='Crosshair', workspace='dialogs', category='Utils',
+          ptype='local'),
+    Bunch(module='Drawing', workspace='dialogs', category='Utils',
+          ptype='local'),
+    Bunch(module='FBrowser', workspace='dialogs', category='Utils',
+          ptype='local'),
+    Bunch(module='ChangeHistory', tab='History', workspace='right',
+          menu="History [G]", start=False, category='Utils', ptype='global'),
+    Bunch(module='Mosaic', workspace='dialogs', category='Utils', ptype='local'),
+    Bunch(module='FBrowser', tab='Open File', workspace='right',
+          menu="Open File [G]", start=False, category='Utils', ptype='global'),
+    Bunch(module='Preferences', workspace='dialogs', category='Utils',
+          ptype='local'),
+    Bunch(module='Ruler', workspace='dialogs', category='Utils', ptype='local'),
+    # TODO: Add SaveImage to File menu.
+    Bunch(module='SaveImage', tab='SaveImage', workspace='right',
+          menu="Save File [G]", start=False, category='Utils', ptype='global'),
+    Bunch(module='WCSAxes', workspace='dialogs', category='Utils',
+          ptype='local'),
+    Bunch(module='WBrowser', tab='Help', workspace='channels', start=False,
+          menu="Help [G]", category='Help', ptype='global'),
+    Bunch(module='Header', tab='Header', workspace='left', start=False,
+          menu="Header [G]", hidden=False, category='Utils', ptype='global'),
+    Bunch(module='Zoom', tab='Zoom', workspace='left', start=False,
+          menu="Zoom [G]", category='Utils', ptype='global'),
 ]
 
 
@@ -151,39 +169,14 @@ class ReferenceViewer(object):
     viewer startup.
     """
     def __init__(self, layout=default_layout):
-        self.local_plugins = []
-        self.global_plugins = []
+        self.plugins = []
         self.layout = layout
 
-    def add_local_plugin_spec(self, spec):
-        self.local_plugins.append(spec)
-
-    def add_global_plugin_spec(self, spec):
-        self.global_plugins.append(spec)
-
-    def add_local_plugin(self, module_name, ws_name,
-                         path=None, klass=None, pfx=None, category=None):
-        """TO BE DEPRECATED--DO NOT USE.
-        Use add_local_plugin_spec() instead.
-        """
-        self.add_local_plugin_spec(
-            Bunch(module=module_name, workspace=ws_name, category=category,
-                  path=path, klass=klass, pfx=pfx))
-
-    def add_global_plugin(self, module_name, ws_name,
-                          path=None, klass=None, category='Global',
-                          tab_name=None, start_plugin=True, pfx=None):
-        """TO BE DEPRECATED--DO NOT USE.
-        Use add_global_plugin_spec() instead.
-        """
-        self.add_global_plugin_spec(
-            Bunch(module=module_name, workspace=ws_name, tab=tab_name,
-                  path=path, klass=klass, category=category,
-                  start=start_plugin, pfx=pfx))
+    def add_plugin_spec(self, spec):
+        self.plugins.append(spec)
 
     def clear_default_plugins(self):
-        self.local_plugins = []
-        self.global_plugins = []
+        self.plugins = []
 
     def add_default_plugins(self, except_global=[], except_local=[]):
         """
@@ -191,14 +184,13 @@ class ReferenceViewer(object):
         reference viewer.
         """
         # add default global plugins
-        for spec in global_plugins:
-            if spec.module not in except_global:
-                self.add_global_plugin_spec(spec)
+        for spec in plugins:
+            ptype = spec.get('ptype', 'local')
+            if ptype == 'global' and spec.module not in except_global:
+                self.add_plugin_spec(spec)
 
-        # add default local plugins
-        for spec in local_plugins:
-            if spec.module not in except_local:
-                self.add_local_plugin_spec(spec)
+            if ptype == 'local' and spec.module not in except_local:
+                self.add_plugin_spec(spec)
 
     def add_separately_distributed_plugins(self):
         from pkg_resources import iter_entry_points
@@ -218,71 +210,75 @@ class ReferenceViewer(object):
         for method in available_methods:
             try:
                 spec = method()
-                if 'start' in spec:
-                    # global plugin
-                    # TODO: need a better differentiator
-                    self.add_global_plugin_spec(spec)
-                else:
-                    # local plugin
-                    self.add_local_plugin_spec(spec)
+                self.add_plugin_spec(spec)
 
             except Exception as e:
                 print("Error trying to instantiate external plugin using %s: %s" % (
                     str(method), str(e)))
 
-    def add_default_options(self, optprs):
+    def add_default_options(self, argprs):
         """
         Adds the default reference viewer startup options to an
-        OptionParser instance `optprs`.
+        ArgumentParser instance `argprs`.
         """
-        optprs.add_option("--bufsize", dest="bufsize", metavar="NUM",
-                          type="int", default=10,
-                          help="Buffer length to NUM")
-        optprs.add_option('-c', "--channels", dest="channels", default="Image",
-                          help="Specify list of channels to create")
-        optprs.add_option("--debug", dest="debug", default=False,
-                          action="store_true",
-                          help="Enter the pdb debugger on main()")
-        optprs.add_option("--disable-plugins", dest="disable_plugins",
-                          metavar="NAMES",
-                          help="Specify plugins that should be disabled")
-        optprs.add_option("--display", dest="display", metavar="HOST:N",
-                          help="Use X display on HOST:N")
-        optprs.add_option("--fitspkg", dest="fitspkg", metavar="NAME",
-                          default=None,
-                          help="Prefer FITS I/O module NAME")
-        optprs.add_option("-g", "--geometry", dest="geometry",
-                          default=None, metavar="GEOM",
-                          help="X geometry for initial size and placement")
-        optprs.add_option("--modules", dest="modules", metavar="NAMES",
-                          help="Specify additional modules to load")
-        optprs.add_option("--nosplash", dest="nosplash", default=False,
-                          action="store_true",
-                          help="Don't display the splash screen")
-        optprs.add_option("--numthreads", dest="numthreads", type="int",
-                          default=30, metavar="NUM",
-                          help="Start NUM threads in thread pool")
-        optprs.add_option("--opencv", dest="opencv", default=False,
-                          action="store_true",
-                          help="Use OpenCv acceleration")
-        optprs.add_option("--opencl", dest="opencl", default=False,
-                          action="store_true",
-                          help="Use OpenCL acceleration")
-        optprs.add_option("--plugins", dest="plugins", metavar="NAMES",
-                          help="Specify additional plugins to load")
-        optprs.add_option("--profile", dest="profile", action="store_true",
-                          default=False,
-                          help="Run the profiler on main()")
-        optprs.add_option("--sep", dest="separate_channels", default=False,
-                          action="store_true",
-                          help="Load files in separate channels")
-        optprs.add_option("-t", "--toolkit", dest="toolkit", metavar="NAME",
-                          default=None,
-                          help="Prefer GUI toolkit (gtk|qt)")
-        optprs.add_option("--wcspkg", dest="wcspkg", metavar="NAME",
-                          default=None,
-                          help="Prefer WCS module NAME")
-        log.addlogopts(optprs)
+        if hasattr(argprs, 'add_option'):
+            # older OptParse
+            add_argument = argprs.add_option
+        else:
+            # newer ArgParse
+            add_argument = argprs.add_argument
+
+        add_argument("--bufsize", dest="bufsize", metavar="NUM",
+                     type=int, default=10,
+                     help="Buffer length to NUM")
+        add_argument('-c', "--channels", dest="channels",
+                     help="Specify list of channels to create")
+        add_argument("--debug", dest="debug", default=False,
+                     action="store_true",
+                     help="Enter the pdb debugger on main()")
+        add_argument("--disable-plugins", dest="disable_plugins",
+                     metavar="NAMES",
+                     help="Specify plugins that should be disabled")
+        add_argument("--display", dest="display", metavar="HOST:N",
+                     help="Use X display on HOST:N")
+        add_argument("--fitspkg", dest="fitspkg", metavar="NAME",
+                     default=None,
+                     help="Prefer FITS I/O module NAME")
+        add_argument("-g", "--geometry", dest="geometry",
+                     default=None, metavar="GEOM",
+                     help="X geometry for initial size and placement")
+        add_argument("--modules", dest="modules", metavar="NAMES",
+                     help="Specify additional modules to load")
+        add_argument("--norestore", dest="norestore", default=False,
+                     action="store_true",
+                     help="Don't restore the GUI from a saved layout")
+        add_argument("--nosplash", dest="nosplash", default=False,
+                     action="store_true",
+                     help="Don't display the splash screen")
+        add_argument("--numthreads", dest="numthreads", type=int,
+                     default=30, metavar="NUM",
+                     help="Start NUM threads in thread pool")
+        add_argument("--opencv", dest="opencv", default=False,
+                     action="store_true",
+                     help="Use OpenCv acceleration")
+        add_argument("--opencl", dest="opencl", default=False,
+                     action="store_true",
+                     help="Use OpenCL acceleration")
+        add_argument("--plugins", dest="plugins", metavar="NAMES",
+                     help="Specify additional plugins to load")
+        add_argument("--profile", dest="profile", action="store_true",
+                     default=False,
+                     help="Run the profiler on main()")
+        add_argument("--sep", dest="separate_channels", default=False,
+                     action="store_true",
+                     help="Load files in separate channels")
+        add_argument("-t", "--toolkit", dest="toolkit", metavar="NAME",
+                     default=None,
+                     help="Prefer GUI toolkit (gtk|qt)")
+        add_argument("--wcspkg", dest="wcspkg", metavar="NAME",
+                     default=None,
+                     help="Prefer WCS module NAME")
+        log.addlogopts(argprs)
 
     def main(self, options, args):
         """
@@ -313,13 +309,15 @@ class ReferenceViewer(object):
         # Set up preferences
         prefs = Settings.Preferences(basefolder=basedir, logger=logger)
         settings = prefs.create_category('general')
-        settings.load(onError='silent')
         settings.set_defaults(useMatplotlibColormaps=False,
                               widgetSet='choose',
                               WCSpkg='choose', FITSpkg='choose',
                               recursion_limit=2000,
                               icc_working_profile=None,
-                              save_layout=False)
+                              font_scaling_factor=None,
+                              save_layout=True,
+                              channel_prefix="Image")
+        settings.load(onError='silent')
 
         # default of 1000 is a little too small
         sys.setrecursionlimit(settings.get('recursion_limit'))
@@ -382,10 +380,16 @@ class ReferenceViewer(object):
             # Add matplotlib color maps if matplotlib is installed
             try:
                 from ginga import cmap
-                cmap.add_matplotlib_cmaps()
+                cmap.add_matplotlib_cmaps(fail_on_import_error=False)
             except Exception as e:
                 logger.warning(
                     "failed to load matplotlib colormaps: %s" % (str(e)))
+
+        # user wants to set font scaling
+        font_scaling = settings.get('font_scaling_factor', None)
+        if font_scaling is not None:
+            from ginga.fonts import font_asst
+            font_asst.default_scaling_factor = font_scaling
 
         # Set a working RGB ICC profile if user has one
         working_profile = settings.get('icc_working_profile', None)
@@ -413,7 +417,7 @@ class ReferenceViewer(object):
 
         try:
             from ginga.util import io_fits
-            if wcspkg != 'choose':
+            if fitspkg != 'choose':
                 assert io_fits.use(fitspkg) is True
         except Exception as e:
             logger.warning(
@@ -453,7 +457,7 @@ class ReferenceViewer(object):
                                  ev_quit=ev_quit)
 
         layout_file = None
-        if settings.get('save_layout', False):
+        if not options.norestore and settings.get('save_layout', False):
             layout_file = os.path.join(basedir, 'layout')
 
         ginga_shell.set_layout(self.layout, layout_file=layout_file)
@@ -483,14 +487,12 @@ class ReferenceViewer(object):
             ginga_shell.set_geometry(options.geometry)
 
         # make the list of disabled plugins
-        disabled_plugins = []
-        if not (options.disable_plugins is None):
+        if options.disable_plugins is not None:
             disabled_plugins = options.disable_plugins.lower().split(',')
-
-        # Add desired global plugins
-        for spec in self.global_plugins:
-            if not spec.module.lower() in disabled_plugins:
-                ginga_shell.add_global_plugin(spec)
+        else:
+            disabled_plugins = settings.get('disable_plugins', [])
+            if not isinstance(disabled_plugins, list):
+                disabled_plugins = disabled_plugins.lower().split(',')
 
         # Add GUI log handler (for "Log" global plugin)
         guiHdlr = GuiLogHandler(ginga_shell)
@@ -500,54 +502,80 @@ class ReferenceViewer(object):
         logger.addHandler(guiHdlr)
 
         # Load any custom modules
-        if options.modules:
+        if options.modules is not None:
             modules = options.modules.split(',')
-            for long_plugin_name in modules:
-                if '.' in long_plugin_name:
-                    tmpstr = long_plugin_name.split('.')
-                    plugin_name = tmpstr[-1]
-                    pfx = '.'.join(tmpstr[:-1])
-                else:
-                    plugin_name = long_plugin_name
-                    pfx = None
-                spec = Bunch(name=plugin_name, module=plugin_name,
-                             tab=plugin_name, workspace='right', pfx=pfx)
-                ginga_shell.add_global_plugin(spec)
+        else:
+            modules = settings.get('global_plugins', [])
+            if not isinstance(modules, list):
+                modules = modules.split(',')
 
-        # Load modules for "local" (per-channel) plug ins
-        for spec in self.local_plugins:
-            if not spec.module.lower() in disabled_plugins:
-                ginga_shell.add_local_plugin(spec)
+        for long_plugin_name in modules:
+            if '.' in long_plugin_name:
+                tmpstr = long_plugin_name.split('.')
+                plugin_name = tmpstr[-1]
+                pfx = '.'.join(tmpstr[:-1])
+            else:
+                plugin_name = long_plugin_name
+                pfx = None
+            menu_name = "%s [G]" % (plugin_name)
+            spec = Bunch(name=plugin_name, module=plugin_name,
+                         ptype='global', tab=plugin_name,
+                         menu=menu_name, category="Custom",
+                         workspace='right', pfx=pfx)
+            self.add_plugin_spec(spec)
 
-        # Load any custom plugins
-        if options.plugins:
+        # Load any custom local plugins
+        if options.plugins is not None:
             plugins = options.plugins.split(',')
-            for long_plugin_name in plugins:
-                if '.' in long_plugin_name:
-                    tmpstr = long_plugin_name.split('.')
-                    plugin_name = tmpstr[-1]
-                    pfx = '.'.join(tmpstr[:-1])
-                else:
-                    plugin_name = long_plugin_name
-                    pfx = None
-                spec = Bunch(module=plugin_name, workspace='dialogs',
-                             hidden=False, pfx=pfx)
-                ginga_shell.add_local_plugin(spec)
+        else:
+            plugins = settings.get('local_plugins', [])
+            if not isinstance(plugins, list):
+                plugins = plugins.split(',')
 
+        for long_plugin_name in plugins:
+            if '.' in long_plugin_name:
+                tmpstr = long_plugin_name.split('.')
+                plugin_name = tmpstr[-1]
+                pfx = '.'.join(tmpstr[:-1])
+            else:
+                plugin_name = long_plugin_name
+                pfx = None
+            spec = Bunch(module=plugin_name, workspace='dialogs',
+                         ptype='local', category="Custom",
+                         hidden=False, pfx=pfx)
+            self.add_plugin_spec(spec)
+
+        # Add non-disabled plugins
+        enabled_plugins = [spec for spec in self.plugins
+                           if spec.module.lower() not in disabled_plugins]
+        ginga_shell.set_plugins(enabled_plugins)
+
+        # start any plugins that have start=True
+        ginga_shell.boot_plugins()
         ginga_shell.update_pending()
 
         # TEMP?
-        tab_names = list(map(lambda name: name.lower(),
-                             ginga_shell.ds.get_tabnames(group=None)))
+        tab_names = [name.lower()
+                     for name in ginga_shell.ds.get_tabnames(group=None)]
         if 'info' in tab_names:
             ginga_shell.ds.raise_tab('Info')
         if 'synopsis' in tab_names:
-            ginga_shell.ds.raise_tab('synopsis')
+            ginga_shell.ds.raise_tab('Synopsis')
         if 'thumbs' in tab_names:
             ginga_shell.ds.raise_tab('Thumbs')
 
         # Add custom channels
-        channels = options.channels.split(',')
+        if options.channels is not None:
+            channels = options.channels.split(',')
+        else:
+            channels = settings.get('channels', [])
+            if not isinstance(channels, list):
+                channels = channels.split(',')
+
+        if len(channels) == 0:
+            # should provide at least one default channel?
+            channels = [settings.get('channel_prefix', "Image")]
+
         for chname in channels:
             ginga_shell.add_channel(chname)
         ginga_shell.change_channel(channels[0])
@@ -582,7 +610,8 @@ class ReferenceViewer(object):
         except KeyError:
             # disable for subsequent runs
             settings.set(showBanner=False)
-            settings.save()
+            if not os.path.exists(settings.preffile):
+                settings.save()
 
         if (not options.nosplash) and (len(args) == 0) and showBanner:
             ginga_shell.banner(raiseTab=True)
@@ -594,23 +623,31 @@ class ReferenceViewer(object):
                 if '[' in imgfile and imgfile.endswith(']'):
                     s = imgfile.split('[')
                     ext = '[' + s[1]
+                    imgfile = s[0]
                 else:
                     ext = ''
-                for fname in glob.iglob(s[0]):
+                for fname in glob.iglob(imgfile):
                     expanded_args.append(fname + ext)
             else:
                 expanded_args.append(imgfile)
 
         # Assume remaining arguments are fits files and load them.
-        chname = None
-        for imgfile in expanded_args:
-            if options.separate_channels and (chname is not None):
-                channel = ginga_shell.add_channel_auto()
-            else:
-                channel = ginga_shell.get_channel_info()
-            chname = channel.name
-            ginga_shell.nongui_do(ginga_shell.load_file, imgfile,
-                                  chname=chname)
+        if not options.separate_channels:
+            chname = channels[0]
+            ginga_shell.gui_do(ginga_shell.open_uris, expanded_args,
+                               chname=chname)
+        else:
+            i = 0
+            num_channels = len(channels)
+            for imgfile in expanded_args:
+                if i < num_channels:
+                    chname = channels[i]
+                    i = i + 1
+                else:
+                    channel = ginga_shell.add_channel_auto()
+                    chname = channel.name
+                ginga_shell.gui_do(ginga_shell.open_uris, [imgfile],
+                                   chname=chname)
 
         try:
             try:
@@ -632,6 +669,32 @@ class ReferenceViewer(object):
 
         sys.exit(0)
 
+    # TO BE DEPRECATED-- DO NOT USE!!!
+
+    def add_global_plugin_spec(self, spec):
+        if 'ptype' not in spec:
+            spec['ptype'] = 'global'
+        self.plugins.append(spec)
+
+    def add_local_plugin_spec(self, spec):
+        if 'ptype' not in spec:
+            spec['ptype'] = 'local'
+        self.plugins.append(spec)
+
+    def add_local_plugin(self, module_name, ws_name,
+                         path=None, klass=None, pfx=None, category=None):
+        self.add_plugin_spec(
+            Bunch(module=module_name, workspace=ws_name, category=category,
+                  ptype='local', path=path, klass=klass, pfx=pfx))
+
+    def add_global_plugin(self, module_name, ws_name,
+                          path=None, klass=None, category='Global',
+                          tab_name=None, start_plugin=True, pfx=None):
+        self.add_plugin_spec(
+            Bunch(module=module_name, workspace=ws_name, tab=tab_name,
+                  path=path, klass=klass, category=category,
+                  ptype='global', start=start_plugin, pfx=pfx))
+
 
 def reference_viewer(sys_argv):
     """Create reference viewer from command line."""
@@ -639,15 +702,15 @@ def reference_viewer(sys_argv):
     viewer.add_default_plugins()
     viewer.add_separately_distributed_plugins()
 
-    # Parse command line options with optparse module
-    from optparse import OptionParser
+    # Parse command line options with argparse module
+    from argparse import ArgumentParser
 
     usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage,
-                          version=('%%prog %s' % version.version))
-    viewer.add_default_options(optprs)
-
-    (options, args) = optprs.parse_args(sys_argv[1:])
+    argprs = ArgumentParser(usage=usage)
+    viewer.add_default_options(argprs)
+    argprs.add_argument('-V', '--version', action='version',
+                        version='%(prog)s {}'.format(version.version))
+    (options, args) = argprs.parse_known_args(sys_argv[1:])
 
     if options.display:
         os.environ['DISPLAY'] = options.display

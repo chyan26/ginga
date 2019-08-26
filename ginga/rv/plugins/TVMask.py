@@ -54,9 +54,6 @@ Used together with ``TVMark``, you can overlay both point sources and
 masked regions in Ginga.
 
 """
-from __future__ import absolute_import, division, print_function
-from ginga.util.six import itervalues
-
 # STDLIB
 import re
 import os
@@ -201,7 +198,8 @@ class TVMask(LocalPlugin):
         self.gui_up = True
 
         # Initialize mask file selection dialog
-        self.mfilesel = FileSelection(self.fv.w.root.get_widget())
+        self.mfilesel = FileSelection(self.fv.w.root.get_widget(),
+                                      all_at_once=True)
 
         # Populate table
         self.redo()
@@ -297,9 +295,19 @@ class TVMask(LocalPlugin):
 
         self.redo()
 
+    def load_files(self, filenames):
+        """Load mask images.
+
+        Results are appended to previously loaded masks.
+        This can be used to load mask per color.
+
+        """
+        for filename in filenames:
+            self.load_file(filename)
+
     def load_mask_cb(self):
         """Activate file dialog to select mask image."""
-        self.mfilesel.popup('Load mask image', self.load_file,
+        self.mfilesel.popup('Load mask image', self.load_files,
                             initialdir='.', filename='FITS files (*.fits)')
 
     def recreate_toc(self):
@@ -322,7 +330,7 @@ class TVMask(LocalPlugin):
             except Exception:
                 pass
 
-        for sub_dict in itervalues(res_dict):
+        for sub_dict in res_dict.values():
             for seqno in sub_dict:
                 mobj = self._maskobjs[int(seqno) - 1]
                 dat = self._rgbtomask(mobj)

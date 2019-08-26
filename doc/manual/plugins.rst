@@ -48,10 +48,10 @@ Global plugins
    plugins_global/wcsmatch
    plugins_global/changehistory
    plugins_global/samp
-   plugins_global/iraf
    plugins_global/log
    plugins_global/command
    plugins_global/saveimage
+   plugins_global/downloads
 
 
 .. _sec-localplugins:

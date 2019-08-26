@@ -3,15 +3,14 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import print_function
 import sys
-import logging
 
-from ginga import AstroImage, colors
+from ginga import colors
 import ginga.toolkit as ginga_toolkit
 from ginga.canvas.CanvasObject import get_canvas_types
 from ginga.util.toolbox import ModeIndicator
 from ginga.misc import log
+from ginga.util.loader import load_data
 
 
 class FitsViewer(object):
@@ -46,7 +45,7 @@ class FitsViewer(object):
         v1.set_callback('drag-drop', self.drop_file)
         v1.set_callback('none-move', self.motion)
         v1.set_bg(0.2, 0.2, 0.2)
-        v1.ui_setActive(True)
+        v1.ui_set_active(True)
         v1.set_name('tweedledee')
         self.viewer1 = v1
         self._mi1 = ModeIndicator(v1)
@@ -74,7 +73,7 @@ class FitsViewer(object):
         v2.set_callback('drag-drop', self.drop_file)
         v2.set_callback('none-move', self.motion)
         v2.set_bg(0.2, 0.2, 0.2)
-        v2.ui_setActive(True)
+        v2.ui_set_active(True)
         v1.set_name('tweedledum')
         self.viewer2 = v2
         self._mi2 = ModeIndicator(v2)
@@ -98,8 +97,8 @@ class FitsViewer(object):
         canvas.set_drawtype('rectangle', color='lightblue')
         self.canvas = canvas
         shcanvas.add(self.canvas)
-        shcanvas.ui_setActive(True)
-        canvas.ui_setActive(True)
+        shcanvas.ui_set_active(True)
+        canvas.ui_set_active(True)
         canvas.set_surface(v1)
 
         self.drawtypes = canvas.get_drawtypes()
@@ -200,9 +199,7 @@ class FitsViewer(object):
         self.canvas.delete_all_objects()
 
     def load_file(self, viewer, filepath):
-        image = AstroImage.AstroImage(logger=self.logger)
-        image.load_file(filepath)
-
+        image = load_data(filepath, logger=self.logger)
         viewer.set_image(image)
         self.top.set_title(filepath)
 
@@ -310,31 +307,24 @@ def main(options, args):
 
 if __name__ == "__main__":
 
-    # Parse command line options with nifty optparse module
-    from optparse import OptionParser
+    # Parse command line options
+    from argparse import ArgumentParser
 
-    usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage, version=('%%prog'))
+    usage = "usage: %prog [options] [args]"
+    argprs = ArgumentParser(usage=usage)
 
-    optprs.add_option("--debug", dest="debug", default=False,
-                      action="store_true",
-                      help="Enter the pdb debugger on main()")
-    optprs.add_option("--log", dest="logfile", metavar="FILE",
-                      help="Write logging output to FILE")
-    optprs.add_option("--loglevel", dest="loglevel", metavar="LEVEL",
-                      type='int', default=logging.INFO,
-                      help="Set logging level to LEVEL")
-    optprs.add_option("--stderr", dest="logstderr", default=False,
-                      action="store_true",
-                      help="Copy logging also to stderr")
-    optprs.add_option("-t", "--toolkit", dest="toolkit", metavar="NAME",
-                      default='qt',
-                      help="Choose GUI toolkit (gtk|qt)")
-    optprs.add_option("--profile", dest="profile", action="store_true",
-                      default=False,
-                      help="Run the profiler on main()")
+    argprs.add_argument("--debug", dest="debug", default=False,
+                        action="store_true",
+                        help="Enter the pdb debugger on main()")
+    argprs.add_argument("-t", "--toolkit", dest="toolkit", metavar="NAME",
+                        default='qt',
+                        help="Choose GUI toolkit (gtk|qt)")
+    argprs.add_argument("--profile", dest="profile", action="store_true",
+                        default=False,
+                        help="Run the profiler on main()")
+    log.addlogopts(argprs)
 
-    (options, args) = optprs.parse_args(sys.argv[1:])
+    (options, args) = argprs.parse_known_args(sys.argv[1:])
 
     # Are we debugging this?
     if options.debug:

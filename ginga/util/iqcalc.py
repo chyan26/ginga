@@ -23,13 +23,32 @@ from ginga.misc import Bunch
 
 
 def get_mean(data_np):
-    mdata = np.ma.masked_array(data_np, np.isnan(data_np))
-    return np.mean(mdata)
+    """Calculate mean for valid values.
+
+    Parameters
+    ----------
+    data_np : ndarray
+        Input array.
+
+    Returns
+    -------
+    result : float
+        Mean of array values that are finite.
+        If array contains no finite values, returns NaN.
+
+    """
+    i = np.isfinite(data_np)
+    if not np.any(i):
+        return np.nan
+    return np.mean(data_np[i])
 
 
 def get_median(data_np):
-    mdata = np.ma.masked_array(data_np, np.isnan(data_np))
-    return np.median(mdata)
+    """Like :func:`get_mean` but for median."""
+    i = np.isfinite(data_np)
+    if not np.any(i):
+        return np.nan
+    return np.median(data_np[i])
 
 
 class IQCalcError(Exception):
@@ -68,6 +87,9 @@ class IQCalc(object):
         a gaussian function on the data.  arr1d is a 1D array cut in either
         X or Y direction on the object.
         """
+        if not have_scipy:
+            raise IQCalcError("Please install the 'scipy' module "
+                              "to use this function")
         if gauss_fn is None:
             gauss_fn = self.gaussian
 
@@ -77,7 +99,7 @@ class IQCalc(object):
         # Fitting works more reliably if we do the following
         # a. subtract sky background
         if medv is None:
-            medv = np.median(Y)
+            medv = get_median(Y)
         Y = Y - medv
         maxv = Y.max()
         # b. clamp to 0..max (of the sky subtracted field)
@@ -127,6 +149,9 @@ class IQCalc(object):
         a Moffat function on the data.  arr1d is a 1D array cut in either
         X or Y direction on the object.
         """
+        if not have_scipy:
+            raise IQCalcError("Please install the 'scipy' module "
+                              "to use this function")
         if moffat_fn is None:
             moffat_fn = self.moffat
 
@@ -136,7 +161,7 @@ class IQCalc(object):
         # Fitting works more reliably if we do the following
         # a. subtract sky background
         if medv is None:
-            medv = np.median(Y)
+            medv = get_median(Y)
         Y = Y - medv
         maxv = Y.max()
         # b. clamp to 0..max (of the sky subtracted field)
@@ -192,7 +217,7 @@ class IQCalc(object):
         radius.
         """
         if medv is None:
-            medv = np.median(data)
+            medv = get_median(data)
 
         # Get two cuts of the data, one in X and one in Y
         x0, y0, xarr, yarr = self.cut_cross(x, y, radius, data)
@@ -218,6 +243,9 @@ class IQCalc(object):
         return fwhm
 
     def centroid(self, data, xc, yc, radius):
+        if not have_scipy:
+            raise IQCalcError("Please install the 'scipy' module "
+                              "to use this function")
         xc, yc = int(xc), int(yc)
         x0, y0, arr = self.cut_region(xc, yc, int(radius), data)
         # See https://stackoverflow.com/questions/25369982/center-of-mass-for-roi-in-python
@@ -234,7 +262,7 @@ class IQCalc(object):
         fdata = fdata[np.isfinite(fdata)]
 
         # find the median
-        median = np.median(fdata)
+        median = get_median(fdata)
 
         # NOTE: for this method a good default sigma is 5.0
         dist = np.fabs(fdata - median).mean()
@@ -258,6 +286,9 @@ class IQCalc(object):
         The routine returns a list of candidate object coordinate tuples
         (x, y) in data.
         """
+        if not have_scipy:
+            raise IQCalcError("Please install the 'scipy' module "
+                              "to use this function")
         if threshold is None:
             # set threshold to default if none provided
             threshold = self.get_threshold(data, sigma=sigma)
@@ -336,7 +367,7 @@ class IQCalc(object):
         w4 = float(width) * 4.0
 
         # Find the median (sky/background) level
-        median = float(np.median(data))
+        median = float(get_median(data))
         #skylevel = median
         # Old SOSS qualsize() applied this calculation to skylevel
         skylevel = median * self.skylevel_magnification + self.skylevel_offset
@@ -344,7 +375,7 @@ class IQCalc(object):
         # Form a list of objects and their characteristics
         objlist = []
         for x, y in peaks:
-            if ev_intr and ev_intr.isSet():
+            if ev_intr and ev_intr.is_set():
                 raise IQCalcError("Evaluation interrupted!")
 
             # Find the fwhm in x and y
@@ -470,7 +501,7 @@ class IQCalc(object):
                  edgew=0.01):
 
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        data = image.cutout_data(x1, y1, x2, y2, astype='float32')
+        data = image.cutout_data(x1, y1, x2, y2, astype=np.float)
 
         qs = self.pick_field(data, peak_radius=radius,
                              bright_radius=bright_radius,

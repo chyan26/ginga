@@ -9,13 +9,14 @@
 # script developed by matplotlib developers
 # See http://matplotlib.org/examples/api/custom_projection_example.html
 #
-from __future__ import print_function
 
 import matplotlib
 from matplotlib.axes import Axes
 from matplotlib.path import Path
 from matplotlib.transforms import BboxTransformTo, Transform
 from matplotlib.projections import register_projection
+
+from ginga.Bindings import PointEvent
 
 
 class GingaAxes(Axes):
@@ -156,7 +157,13 @@ class GingaAxes(Axes):
         """
         bd = self.viewer.get_bindings()
         data_x, data_y = self.viewer.get_data_xy(x, y)
-        bd.ms_pan(self.viewer, 'down', data_x, data_y)
+        event = PointEvent(button=button, state='down',
+                           data_x=data_x, data_y=data_y,
+                           viewer=self.viewer)
+        if button == 1:
+            bd.ms_pan(self.viewer, event, data_x, data_y)
+        elif button == 3:
+            bd.ms_zoom(self.viewer, event, data_x, data_y)
 
     def end_pan(self):
         """
@@ -168,9 +175,7 @@ class GingaAxes(Axes):
             Intended to be overridden by new projection types.
 
         """
-        bd = self.viewer.get_bindings()
-        data_x, data_y = self.viewer.get_last_data_xy()
-        bd.ms_pan(self.viewer, 'up', data_x, data_y)
+        pass
 
     def drag_pan(self, button, key, x, y):
         """
@@ -193,7 +198,13 @@ class GingaAxes(Axes):
         """
         bd = self.viewer.get_bindings()
         data_x, data_y = self.viewer.get_data_xy(x, y)
-        bd.ms_pan(self.viewer, 'move', data_x, data_y)
+        event = PointEvent(button=button, state='move',
+                           data_x=data_x, data_y=data_y,
+                           viewer=self.viewer)
+        if button == 1:
+            bd.ms_pan(self.viewer, event, data_x, data_y)
+        elif button == 3:
+            bd.ms_zoom(self.viewer, event, data_x, data_y)
 
     # Now, the transforms themselves.
 

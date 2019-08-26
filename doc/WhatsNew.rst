@@ -1,9 +1,116 @@
-++++++++++++++++++++
-What's New in Ginga?
-++++++++++++++++++++
+++++++++++
+What's New
+++++++++++
 
-Ver 2.7.0.dev
-=============
+Ver 3.0.0 (unreleased)
+======================
+- Dropped Python 2 support. Ginga now requires Python 3.5 or later.
+- Fixed an issue with some RGB images being viewed flipped
+- Improved accuracy of Qt-based timers
+- Pick plugin enhanced with option to center on found object; also
+  default shape changed to a box rather than a rectangle
+- Added support for ASDF and GWCS.
+- Fixed drag-and-drop functionality in FBrowser plugin on Windows.
+- Enabled HDU sorting via config file in MultiDim.
+- Fixed a bug where display would get corrupted when adjusting
+  interactive cuts or contrast on rotated image
+- Improved smoothness and updates of Zoom plugin image
+- Improved smoothness and updates when rotating or shifting color map
+- Fixed broken banner
+- Improved ``pip`` installation commands for different backends.
+- Fixed a bug where identically named HDUs could not be loaded by MultiDim
+- Fixed a bug where compressed HDUs could not be loaded by MultiDim
+- Plugins with splitter type panels now remember their sizes when closed
+- LineProfile plugin's default Y-axis label is now "Signal", to be more
+  scientifically accurate.
+- Simplified plugins Colorbar, Contents, Cursor, Errors, Header, Info,
+  Log, Pan, and Thumbs plugins.  Made all of these restartable.
+  Subclasses of these plugins may require refactoring in a couple of cases.
+- Selecting item in FBrowser now populates its text box properly.
+- Support opening all extensions of given extension name from
+  a FITS file (e.g., ``filename.fits[SCI,*]``) from Ginga command
+  line or FBrowser.
+- New Downloads plugin for monitoring/managing URI downloads
+- Supports PySide2 (alternative Qt5 backend)
+- Added statistics line to Histogram plugin
+- Removed support for gtk2, since it is not supported for Python 3
+
+Ver 2.7.2 (2018-11-05)
+======================
+- Fix for linewidth attribute in shapes for AGG backend
+- Fix for ellipse rotation in OpenCv backend
+- Better text rendering for OpenCv backend (loadable fonts)
+- enhancements to the Ruler plugin for reference viewer
+- supports quick loading from astropy NDData (or subclassed) objects
+- Support for scaling fonts on high-dpi displays
+- Fixed a bug where adjusting autocuts parameters in Preferences would
+  crash the Qt backend
+- Fixed a bug that caused windows to disappear when changing workspace
+  to MDI mode under Gtk3 backend
+- Fixed a bug where local plugins were not properly closed when a
+  channel is deleted
+- Fixed a bug in which the ColorMapPlugin canvas was not scaled to the
+  correct size
+- Improvements to synchronous refresh feature to reduce jitter and
+  increase frame rate
+- Fix for navigating certain data cubes with MutltiDim plugin
+- Added new percentage transform and coordinate mapper type (allow
+  placement of objects as a percentage of the window size)
+- Updates to Compass canvas type and Pan plugin
+- Documentation improvements for writing plugins
+
+Ver 2.7.1 (2018-07-09)
+======================
+- Fix for image rendering bug which shows last row and column of image
+  being drawn twice
+- Added option to "Compass" draw type to be in pixels (X/Y) or wcs (N/E)
+- Changed Pan plugin to attempt to draw both kinds of compasses
+- Log plugin enhanced to show lines logged before it was opened
+- Info plugin adds convenience controls for "Follow New" and "Raise New"
+- WCSMatch plugin enhanced to offer fine grained control over sync
+- fixed an issue in Debian build that caused long start up times
+- User can dynamically add scrollbars to channel viewers in Preferences
+- Made Gtk backend default to 'gtk3'
+  - "-t gtk" now invokes gtk3 instead of gtk2
+  - choose "-t gtk2" if you want the gtk2 back end
+- Fixed a bug with opening wildcard-type filespec from the command line
+- Fixed an issue in Thumbs plugin with opening FITS tables from the
+  command line
+- Fixes for some keyboard focus (Gtk) and unintentional channel changes
+  (Qt) when viewer is in MDI mode
+- IRAF plugin moved to experimental folder
+- Allow setting of initial channel list, local, global and disabled
+  plugins from general configuration file
+- Fix for a bug when using OpenCv acceleration on dtype('>f8') arrays
+- Fixed a bug where colormap scale markers were sometimes not spaced
+  wide enough
+- Workaround for failed PDF build in RTD documentation
+
+Ver 2.7.0 (2018-02-02)
+======================
+- Fix for gtk 4.0 (use "gtk3" backend, it works for 4.0)
+- Fix for broken polygon containment test
+- Addition of configurable zoom handlers for pan gestures
+- Fix for some broken tests under python 2.7
+- Update to mode handling via keyboard shortcuts
+
+  - addition of a new "meta" mode used primarily for mode switching
+  - most modes now initiated from meta mode, which frees up keys
+    for other uses
+  - see Ginga quick reference for details on how the new bindings work
+
+- Efficiency update for Thumbs plugin when many thumbs are present
+- Default for the save_layout option is now True, so the reference
+  viewer will write out its layout state on exit and restore it on
+  startup.  See documentation in the "customization" section of the
+  manual.
+- Plugins can now be organized by category and these categories are
+  used to construct a hierarchical Operations menu
+- Zoom and Header plugins are now not started by default
+- Fix for "sortable" checkbox behavior on Header plugin
+- Default keyboard mode type is now 'locked' (prev 'oneshot')
+- Fixes for missing CSS file in installation script
+- Less confusing behavior for workspace and toolbar arrow buttons
 
 Ver 2.6.6 (2017-11-02)
 ======================
@@ -17,13 +124,13 @@ Ver 2.6.6 (2017-11-02)
     method called cairo.ImageSurface.create_for_data()
 
 - Addition of a "Quick Mode" to the Pick plugin--see documentation
-- More consistent font handing between widgets and Ginga canvases 
+- More consistent font handing between widgets and Ginga canvases
 - Bug fix for importing some types of matplotlib color maps
 - Add antialiasing for Qt back end
 - Bug fixes and enhancements for Qt gestures
   - holding shift with pinch now keeps position under cursor
 - New Jupyter notebooks back end based on ipywidgets
-  - requirements: $ pip install ipyevents      
+  - requirements: $ pip install ipyevents
   - see examples/jupyter-notebook/
 - Fixes to various reference viewer plugins
 

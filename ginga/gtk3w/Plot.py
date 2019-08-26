@@ -5,12 +5,13 @@
 # Please see the file LICENSE.txt for details.
 #
 import matplotlib
-matplotlib.use('GTK3Cairo')
-from matplotlib.backends.backend_gtk3cairo import FigureCanvasGTK3Cairo as FigureCanvas  # noqa
-## matplotlib.use('GTK3Agg')
-## from  matplotlib.backends.backend_gtk3agg import FigureCanvasGTK3Agg \
-##      as FigureCanvas
-
+# GTK3Cairo backend is slow to redraw compared to GTK3Agg!
+# matplotlib.use('GTK3Cairo')
+# from matplotlib.backends.backend_gtk3cairo import (FigureCanvasGTK3Cairo
+#                                                    as FigureCanvas)  # noqa
+matplotlib.use('GTK3Agg')
+from matplotlib.backends.backend_gtk3agg import (FigureCanvasGTK3Agg
+                                                 as FigureCanvas)  # noqa
 from ginga.gtk3w import Widgets  # noqa
 
 
@@ -21,9 +22,15 @@ class PlotWidget(Widgets.WidgetBase):
 
         self.widget = FigureCanvas(plot.get_figure())
         self.plot = plot
+        self.logger = plot.logger
 
         self.widget.set_size_request(width, height)
         self.widget.show_all()
+
+    def set_plot(self, plot):
+        self.plot = plot
+        self.logger = plot.logger
+        self.logger.debug("set_plot called")
 
     def configure_window(self, wd, ht):
         self.logger.debug("canvas resized to %dx%d" % (wd, ht))

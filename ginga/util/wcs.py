@@ -1,10 +1,6 @@
 #
 # wcs.py -- calculations based on world coordinate system.
 #
-# Eric Jeschke (eric@naoj.org)
-# Takeshi Inagaki
-# Bruce Bon
-#
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
@@ -22,7 +18,8 @@ __all__ = ['hmsToDeg', 'dmsToDeg', 'decTimeToDeg', 'degToHms', 'degToDms',
            'get_xy_rotation_and_scale', 'get_rotation_and_scale',
            'get_relative_orientation', 'simple_wcs', 'deg2fmt', 'dispos',
            'deltaStarsRaDecDeg1', 'deltaStarsRaDecDeg2', 'get_starsep_RaDecDeg',
-           'add_offset_radec', 'get_RaDecOffsets', 'lon_to_deg', 'lat_to_deg']
+           'add_offset_radec', 'get_RaDecOffsets', 'lon_to_deg', 'lat_to_deg',
+           ]
 
 
 class WCSError(Exception):
@@ -407,7 +404,7 @@ def simple_wcs(px_x, px_y, ra_deg, dec_deg, px_scale_deg_px, rot_deg,
         DEC (in deg) for the reference point
 
     px_scale_deg_px
-        Pixel scale (deg/pixel)
+        Pixel scale (deg/pixel); can be a tuple for different x,y scales
 
     rot_deg
         Rotation angle of the field (in deg)
@@ -426,7 +423,7 @@ def simple_wcs(px_x, px_y, ra_deg, dec_deg, px_scale_deg_px, rot_deg,
     crval = (ra_deg, dec_deg)  # RA, Dec (degrees)
 
     # image scale in deg/pix
-    cdelt = np.array(cdbase) * px_scale_deg_px
+    cdelt = np.array(cdbase) * np.array(px_scale_deg_px)
 
     # Create rotation matrix for position angle of north (radians E of N)
     rot_rad = np.radians(rot_deg)
@@ -664,5 +661,146 @@ def lat_to_deg(lat):
     else:
         lat_deg = float(lat)
     return lat_deg
+
+
+def get_ruler_distances(image, p1, p2):
+    """Get the distance calculated between two points.  A Bunch of
+    results is returned, containing pixel values and distance values
+    if the image contains a valid WCS.
+    """
+    x1, y1 = p1[:2]
+    x2, y2 = p2[:2]
+
+    dx, dy = x2 - x1, y2 - y1
+    res = Bunch.Bunch(x1=x1, y1=y1, x2=x2, y2=y2,
+                      theta=np.arctan2(y2 - y1, x2 - x1),
+                      dx_pix=dx, dy_pix=dy,
+                      dh_pix=np.sqrt(dx**2 + dy**2),
+                      ra_org=None, dec_org=None,
+                      ra_dst=None, dec_dst=None,
+                      ra_heel=None, dec_heel=None,
+                      dx_deg=None, dy_deg=None, dh_deg=None)
+
+    if image is not None and hasattr(image, 'wcs') and image.wcs is not None:
+        # Calculate RA and DEC for the three points
+        try:
+            # origination point
+            ra_org, dec_org = image.pixtoradec(x1, y1)
+            res.ra_org, res.dec_org = ra_org, dec_org
+
+            # destination point
+            ra_dst, dec_dst = image.pixtoradec(x2, y2)
+            res.ra_dst, res.dec_dst = ra_dst, dec_dst
+
+            # "heel" point making a right triangle
+            ra_heel, dec_heel = image.pixtoradec(x2, y1)
+            res.ra_heel, res.dec_heel = ra_heel, dec_heel
+
+            res.dh_deg = deltaStarsRaDecDeg(ra_org, dec_org,
+                                            ra_dst, dec_dst)
+            res.dx_deg = deltaStarsRaDecDeg(ra_org, dec_org,
+                                            ra_heel, dec_heel)
+            res.dy_deg = deltaStarsRaDecDeg(ra_heel, dec_heel,
+                                            ra_dst, dec_dst)
+        except Exception as e:
+            pass
+
+    return res
+
+
+def get_starsep_XY(image, x1, y1, x2, y2):
+    # source point
+    ra_org, dec_org = image.pixtoradec(x1, y1)
+
+    # destination point
+    ra_dst, dec_dst = image.pixtoradec(x2, y2)
+
+    return get_starsep_RaDecDeg(ra_org, dec_org, ra_dst, dec_dst)
+
+
+def calc_radius_xy(image, x, y, radius_deg):
+    """Calculate a radius (in pixels) from the point (x, y) to a circle
+    defined by radius in degrees.
+    """
+    # calculate ra/dec of x,y pixel
+    ra_deg, dec_deg = image.pixtoradec(x, y)
+
+    # Calculate position 1 degree from the given one
+    # NOTE: this needs to add in DEC, not RA
+    ra2_deg, dec2_deg = add_offset_radec(ra_deg, dec_deg,
+                                         0.0, 1.0)
+
+    # Calculate the length of this segment--it is pixels/deg
+    x2, y2 = image.radectopix(ra2_deg, dec2_deg)
+    px_per_deg_e = math.sqrt(math.fabs(x2 - x)**2 + math.fabs(y2 - y)**2)
+
+    # calculate radius based on desired radius_deg
+    radius_px = px_per_deg_e * radius_deg
+    return radius_px
+
+
+def calc_radius_deg2pix(image, ra_deg, dec_deg, delta_deg,
+                        equinox=None):
+    x, y = image.radectopix(ra_deg, dec_deg, equinox=equinox)
+    return calc_radius_xy(image, x, y, delta_deg)
+
+
+def add_offset_xy(image, x, y, delta_deg_x, delta_deg_y):
+    # calculate ra/dec of x,y pixel
+    ra_deg, dec_deg = image.pixtoradec(x, y)
+
+    # add offsets
+    ra2_deg, dec2_deg = add_offset_radec(ra_deg, dec_deg,
+                                         delta_deg_x, delta_deg_y)
+
+    # then back to new pixel coords
+    x2, y2 = image.radectopix(ra2_deg, dec2_deg)
+
+    return (x2, y2)
+
+
+def calc_radius_center(image, delta_deg):
+    return calc_radius_xy(image,
+                          float(image.width / 2.0),
+                          float(image.height / 2.0),
+                          delta_deg)
+
+
+def calc_compass(image, x, y, len_deg_e, len_deg_n):
+
+    # Get east and north coordinates
+    xe, ye = add_offset_xy(image, x, y, len_deg_e, 0.0)
+    xn, yn = image.add_offset_xy(x, y, 0.0, len_deg_n)
+
+    return (x, y, xn, yn, xe, ye)
+
+
+def calc_compass_radius(image, x, y, radius_px):
+    xe, ye = image.add_offset_xy(x, y, 1.0, 0.0)
+    xn, yn = image.add_offset_xy(x, y, 0.0, 1.0)
+
+    # now calculate the length in pixels of those arcs
+    # (planar geometry is good enough here)
+    px_per_deg_e = math.sqrt(math.fabs(ye - y)**2 + math.fabs(xe - x)**2)
+    px_per_deg_n = math.sqrt(math.fabs(yn - y)**2 + math.fabs(xn - x)**2)
+
+    # now calculate the arm length in degrees for each arm
+    # (this produces same-length arms)
+    len_deg_e = radius_px / px_per_deg_e
+    len_deg_n = radius_px / px_per_deg_n
+
+    return calc_compass(image, x, y, len_deg_e, len_deg_n)
+
+
+def calc_compass_center(image):
+    # calculate center of data
+    x = float(image.width) / 2.0
+    y = float(image.height) / 2.0
+
+    # radius we want the arms to be (approx 1/4 the smallest dimension)
+    radius_px = float(min(image.width, image.height)) / 4.0
+
+    return calc_compass_radius(image, x, y, radius_px)
+
 
 # END

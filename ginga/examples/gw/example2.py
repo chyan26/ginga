@@ -5,14 +5,15 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import print_function
 
 import sys
 
 import ginga.toolkit as ginga_toolkit
-from ginga import AstroImage, colors
+from ginga import colors
 from ginga.canvas.CanvasObject import get_canvas_types
+from ginga.canvas import render
 from ginga.misc import log
+from ginga.util.loader import load_data
 
 
 class FitsViewer(object):
@@ -179,9 +180,7 @@ class FitsViewer(object):
         self.canvas.delete_all_objects()
 
     def load_file(self, filepath):
-        image = AstroImage.AstroImage(logger=self.logger)
-        image.load_file(filepath)
-
+        image = load_data(filepath, logger=self.logger)
         self.fitsimage.set_image(image)
         self.top.set_title(filepath)
 
@@ -292,6 +291,10 @@ def main(options, args):
 
     viewer = FitsViewer(logger)
 
+    if options.renderer is not None:
+        render_class = render.get_render_class(options.renderer)
+        viewer.fitsimage.set_renderer(render_class(viewer.fitsimage))
+
     viewer.top.resize(700, 540)
 
     if len(args) > 0:
@@ -312,30 +315,33 @@ def main(options, args):
 
 if __name__ == "__main__":
 
-    # Parse command line options with nifty optparse module
-    from optparse import OptionParser
+    # Parse command line options
+    from argparse import ArgumentParser
 
-    usage = "usage: %prog [options] cmd [args]"
-    optprs = OptionParser(usage=usage, version=('%%prog'))
+    usage = "usage: %prog [options] [args]"
+    argprs = ArgumentParser(usage=usage)
 
-    optprs.add_option("--debug", dest="debug", default=False,
-                      action="store_true",
-                      help="Enter the pdb debugger on main()")
-    optprs.add_option("-t", "--toolkit", dest="toolkit", metavar="NAME",
-                      default='qt',
-                      help="Choose GUI toolkit (gtk|qt)")
-    optprs.add_option("--opencv", dest="use_opencv", default=False,
-                      action="store_true",
-                      help="Use OpenCv acceleration")
-    optprs.add_option("--opencl", dest="use_opencl", default=False,
-                      action="store_true",
-                      help="Use OpenCL acceleration")
-    optprs.add_option("--profile", dest="profile", action="store_true",
-                      default=False,
-                      help="Run the profiler on main()")
-    log.addlogopts(optprs)
+    argprs.add_argument("--debug", dest="debug", default=False,
+                        action="store_true",
+                        help="Enter the pdb debugger on main()")
+    argprs.add_argument("-t", "--toolkit", dest="toolkit", metavar="NAME",
+                        default='qt',
+                        help="Choose GUI toolkit (gtk|qt)")
+    argprs.add_argument("--opencv", dest="use_opencv", default=False,
+                        action="store_true",
+                        help="Use OpenCv acceleration")
+    argprs.add_argument("--opencl", dest="use_opencl", default=False,
+                        action="store_true",
+                        help="Use OpenCL acceleration")
+    argprs.add_argument("--profile", dest="profile", action="store_true",
+                        default=False,
+                        help="Run the profiler on main()")
+    argprs.add_argument("-r", "--renderer", dest="renderer", metavar="NAME",
+                        default=None,
+                        help="Choose renderer (pil|agg|opencv|cairo|qt)")
+    log.addlogopts(argprs)
 
-    (options, args) = optprs.parse_args(sys.argv[1:])
+    (options, args) = argprs.parse_known_args(sys.argv[1:])
 
     # Are we debugging this?
     if options.debug:

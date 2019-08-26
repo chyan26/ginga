@@ -4,12 +4,10 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from ginga import trcalc
-from ginga.util import io_rgb
-from ginga.misc import Bunch
-from ginga.BaseImage import BaseImage, Header
+import numpy as np
 
-import numpy
+from ginga.util import io_rgb
+from ginga.BaseImage import BaseImage, ImageError
 
 
 class RGBImage(BaseImage):
@@ -26,7 +24,7 @@ class RGBImage(BaseImage):
 
     def set_color(self, r, g, b):
         # TODO: handle other sizes
-        ch_max = 255
+        ch_max = np.iinfo(self._data.dtype).max
         red = self.get_slice('R')
         red[:] = int(ch_max * r)
         grn = self.get_slice('G')
@@ -34,17 +32,17 @@ class RGBImage(BaseImage):
         blu = self.get_slice('B')
         blu[:] = int(ch_max * b)
 
-    def load_file(self, filepath):
-        kwds = Header()
-        metadata = {'header': kwds, 'path': filepath}
+    def load_file(self, filespec, **kwargs):
+        if self.io is None:
+            raise ImageError("No IO loader defined")
 
-        # TODO: ideally we would be informed by channel order
-        # in result by io_rgb
-        data_np = self.io.load_file(filepath, kwds)
+        self.io.load_file(filespec, dstobj=self, **kwargs)
 
+    def load_data(self, data_np, metadata=None):
+        self.clear_metadata()
         self.set_data(data_np, metadata=metadata)
 
-        if not (self.name is None):
+        if self.name is not None:
             self.set(name=self.name)
 
     def save_as_file(self, filepath):
@@ -73,30 +71,9 @@ class RGBImage(BaseImage):
             order = list(self.order)
             l = [self.get_slice(c) for c in order]
             wd, ht = self.get_size()
-            a = numpy.zeros((ht, wd), dtype=numpy.uint8)
+            a = np.zeros((ht, wd), dtype=self._data.dtype)
             a.fill(alpha)
             l.insert(pos, a)
-            self._data = numpy.dstack(l)
+            self._data = np.dstack(l)
             order.insert(pos, 'A')
             self.order = ''.join(order)
-
-    def get_scaled_cutout_wdht(self, x1, y1, x2, y2, new_wd, new_ht,
-                               method='basic'):
-        newdata, (scale_x, scale_y) = trcalc.get_scaled_cutout_wdht(
-            self._get_data(), x1, y1, x2, y2, new_wd, new_ht,
-            interpolation=method, logger=self.logger)
-
-        res = Bunch.Bunch(data=newdata, scale_x=scale_x, scale_y=scale_y)
-        return res
-
-    def get_scaled_cutout(self, x1, y1, x2, y2, scale_x, scale_y,
-                          method='basic'):
-        newdata, (scale_x, scale_y) = trcalc.get_scaled_cutout_basic(
-            self._get_data(), x1, y1, x2, y2, scale_x, scale_y,
-            interpolation=method, logger=self.logger)
-
-        res = Bunch.Bunch(data=newdata, scale_x=scale_x, scale_y=scale_y)
-        return res
-
-
-#END

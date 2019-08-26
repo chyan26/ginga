@@ -2,13 +2,10 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import absolute_import
-
 import numpy as np
 from kapteyn import wcs as kapwcs
 
-from ..six.moves import map
-from . import common
+from ginga.util.wcsmod import common
 
 coord_types = ['icrs', 'fk5', 'fk4', 'galactic', 'ecliptic']
 
@@ -134,6 +131,9 @@ class KapteynWCS(common.BaseWCS):
 
     def datapt_to_wcspt(self, datapt, coords='data', naxispath=None):
 
+        # force to array representation
+        datapt = np.asarray(datapt)
+
         # Kapteyn's WCS needs pixels referenced from 1
         if coords == 'data':
             datapt = datapt + 1.0
@@ -158,6 +158,9 @@ class KapteynWCS(common.BaseWCS):
         return wcspt
 
     def wcspt_to_datapt(self, wcspt, coords='data', naxispath=None):
+
+        # force to array representation
+        wcspt = np.asarray(wcspt)
 
         if naxispath is not None:
             n = len(naxispath)

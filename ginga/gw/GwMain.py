@@ -4,25 +4,17 @@
 # This is open-source software licensed under a BSD license.
 # Please see the file LICENSE.txt for details.
 #
-from __future__ import print_function
-
 import sys
 import traceback
 import threading
 import logging
 import time
 
-from ginga.util.six.moves import filter
 from ginga.misc import Task, Future, Callback
 from collections import deque
 
-import ginga.util.six as six
-if six.PY2:
-    import thread
-    import Queue
-else:
-    import _thread as thread
-    import queue as Queue
+import _thread as thread
+import queue as Queue
 
 
 class GwMain(Callback.Callbacks):
@@ -245,7 +237,7 @@ class GwMain(Callback.Callbacks):
         # Mark our thread id
         self.gui_thread_id = thread.get_ident()
 
-        while not self.ev_quit.isSet():
+        while not self.ev_quit.is_set():
 
             self.update_pending(timeout=timeout)
 

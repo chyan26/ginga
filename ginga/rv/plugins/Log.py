@@ -29,6 +29,7 @@ There are four controls:
 
 """
 import logging
+from collections import deque
 
 from ginga import GingaPlugin
 from ginga.gw import Widgets
@@ -50,6 +51,8 @@ class Log(GingaPlugin.GlobalPlugin):
                        ('Debug', logging.DEBUG))
         self.autoscroll = True
         self.tw = None
+        self._lines = deque([], self.histlimit)
+        self.gui_up = False
 
     def build_gui(self, container):
         vbox = Widgets.VBox()
@@ -108,15 +111,18 @@ class Log(GingaPlugin.GlobalPlugin):
         vbox.add_widget(btns, stretch=0)
 
         container.add_widget(vbox, stretch=1)
+        self.gui_up = True
 
     def set_history(self, histlimit):
         if histlimit > self.histmax:
             raise Exception(
                 "Limit exceeds maximum value of %d" % (self.histmax))
         self.histlimit = histlimit
+        self._lines = deque(self._lines, histlimit)
         self.logger.debug("Logging history limit set to %d" % (
             histlimit))
-        self.tw.set_limit(histlimit)
+        if self.tw is not None:
+            self.tw.set_limit(histlimit)
 
     def set_history_cb(self, w, val):
         self.set_history(val)
@@ -131,17 +137,28 @@ class Log(GingaPlugin.GlobalPlugin):
         self.autoscroll = val
 
     def log(self, text):
-        if self.tw is not None:
+        if self.gui_up:
             self.tw.append_text(text + '\n',
                                 autoscroll=self.autoscroll)
+        else:
+            self._lines.append(text)
 
     def clear(self):
-        self.tw.clear()
+        if self.gui_up:
+            self.tw.clear()
+        self._lines.clear()
         return True
+
+    def start(self):
+        self.tw.set_text('\n'.join(self._lines))
+        self._lines.clear()
+
+    def stop(self):
+        self.tw = None
+        self.gui_up = False
 
     def close(self):
         self.fv.stop_global_plugin(str(self))
-        self.tw = None
         return True
 
     def __str__(self):

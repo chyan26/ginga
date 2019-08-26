@@ -44,6 +44,8 @@ class Toolbar(GingaPlugin.GlobalPlugin):
         fv.set_callback('add-channel', self.add_channel_cb)
         fv.set_callback('delete-channel', self.delete_channel_cb)
         fv.set_callback('channel-change', self.focus_cb)
+        fv.add_callback('add-image-info', self._ch_image_added_cb)
+        fv.add_callback('remove-image-info', self._ch_image_removed_cb)
 
     def build_gui(self, container):
         top = Widgets.VBox()
@@ -75,10 +77,10 @@ class Toolbar(GingaPlugin.GlobalPlugin):
             ("OrientLH", 'button', 'orient_ne_48', "Orient image N=Up E=Left",
              self.orient_lh_cb),
             ("---",),
-            ("Prev", 'button', 'prev_48', "Go to previous channel",
-             lambda w: self.fv.prev_channel()),
-            ("Next", 'button', 'next_48', "Go to next channel",
-             lambda w: self.fv.next_channel()),
+            ## ("Prev", 'button', 'prev_48', "Go to previous channel",
+            ##  lambda w: self.fv.prev_channel()),
+            ## ("Next", 'button', 'next_48', "Go to next channel",
+            ##  lambda w: self.fv.next_channel()),
             ("Up", 'button', 'up_48', "Go to previous image in channel",
              lambda w: self.fv.prev_img()),
             ("Down", 'button', 'down_48', "Go to next image in channel",
@@ -124,9 +126,12 @@ class Toolbar(GingaPlugin.GlobalPlugin):
              lambda w: self.start_plugin_cb('Preferences')),
             ("FBrowser", 'button', 'open_48', "Open file",
              lambda w: self.start_plugin_cb('FBrowser')),
-            ## ("Histogram", 'button', 'open_48', "Histogram and cut levels",
-            ##  lambda w: self.start_plugin_cb('Histogram')),
-            #("Quit", 'button', 'exit_48', "Quit the program"),
+            ("MultiDim", 'button', 'layers_48', "Select HDUs or cube slices",
+             lambda w: self.start_plugin_cb('MultiDim')),
+            ("Header", 'button', 'tags_48', "View image metadata",
+             lambda w: self.start_global_plugin_cb('Header')),
+            ("Zoom", 'button', 'microscope_48', "Magnify detail",
+             lambda w: self.start_global_plugin_cb('Zoom')),
             ):  # noqa
 
             name = tup[0]
@@ -173,6 +178,8 @@ class Toolbar(GingaPlugin.GlobalPlugin):
         # to delete
 
     def focus_cb(self, viewer, channel):
+        self.update_channel_buttons(channel)
+
         fitsimage = channel.fitsimage
         self.active = fitsimage
         self._update_toolbar_state(fitsimage)
@@ -216,10 +223,15 @@ class Toolbar(GingaPlugin.GlobalPlugin):
     def reset_all_transforms_cb(self, w):
         view, bd = self._get_view()
         bd.kp_rotate_reset(view, 'x', 0.0, 0.0)
+        bd.kp_transform_reset(view, 'x', 0.0, 0.0)
         return True
 
     def start_plugin_cb(self, name):
         self.fv.start_operation(name)
+        return True
+
+    def start_global_plugin_cb(self, name):
+        self.fv.start_global_plugin(name, raise_tab=True)
         return True
 
     def flipx_cb(self, w, tf):
@@ -314,6 +326,22 @@ class Toolbar(GingaPlugin.GlobalPlugin):
         channel = self.fv.get_channel_info()
         view = channel.fitsimage
         return (view, view.get_bindings())
+
+    def _ch_image_added_cb(self, shell, channel, info):
+        if channel != shell.get_current_channel():
+            return
+        self.update_channel_buttons(channel)
+
+    def _ch_image_removed_cb(self, shell, channel, info):
+        if channel != shell.get_current_channel():
+            return
+        self.update_channel_buttons(channel)
+
+    def update_channel_buttons(self, channel):
+        # Update toolbar channel buttons
+        enabled = len(channel) > 1
+        self.w.btn_up.set_enabled(enabled)
+        self.w.btn_down.set_enabled(enabled)
 
     def _update_toolbar_state(self, fitsimage):
         if (fitsimage is None) or (not self.gui_up):

@@ -54,7 +54,6 @@ from ginga.misc import Bunch
 from ginga import GingaPlugin
 from ginga import cmap, imap
 from ginga.util import wcs
-from ginga.util.six.moves import map
 from ginga.gw import ColorBar, Widgets
 
 __all__ = ['Catalogs']
@@ -386,6 +385,7 @@ class Catalogs(GingaPlugin.LocalPlugin):
                 ht = y2 - y1
                 dh = ht // 2
                 ctr_x, ctr_y = x1 + dw, y1 + dh
+                ra_ctr_deg, dec_ctr_deg = image.pixtoradec(ctr_x, ctr_y)
                 ra_ctr, dec_ctr = image.pixtoradec(ctr_x, ctr_y, format='str')
 
                 # Calculate RA and DEC for the three points
@@ -409,6 +409,7 @@ class Catalogs(GingaPlugin.LocalPlugin):
                 # enclosed by the circle
                 ctr_x, ctr_y = obj.crdmap.to_data((obj.x, obj.y))
                 ra_ctr, dec_ctr = image.pixtoradec(ctr_x, ctr_y)
+                ra_ctr_deg, dec_ctr_deg = ra_ctr, dec_ctr
                 dst_x, dst_y = obj.crdmap.to_data((obj.x + obj.radius, obj.y))
                 ra_dst, dec_dst = image.pixtoradec(dst_x, dst_y)
                 radius_deg = wcs.deltaStarsRaDecDeg(ra_ctr, dec_ctr,
@@ -446,6 +447,7 @@ class Catalogs(GingaPlugin.LocalPlugin):
 
         # Copy the image parameters out to the widget
         d = {'ra': ra_ctr, 'dec': dec_ctr, 'width': str(wd),
+             'ra_deg': ra_ctr_deg, 'dec_deg': dec_ctr_deg,
              'height': ht, 'r': radius, 'r2': radius,
              'r1': 0.0}
         self._update_widgets(d)
@@ -1157,12 +1159,11 @@ class CatalogListing(object):
             combobox.append_text(name)
             index += 1
         combobox.set_index(0)
-        combobox.add_callback('activated',
-                              lambda w, idx: self.do_operation_cb(idx))
         self.btn['oprn'] = combobox
         btns.add_widget(combobox, stretch=0)
 
         btn = Widgets.Button("Do it")
+        btn.add_callback('activated', self.do_operation_cb, combobox)
         btns.add_widget(btn, stretch=0)
 
         vbox.add_widget(btns, stretch=0)
@@ -1330,8 +1331,8 @@ class CatalogListing(object):
         fieldname = self.columns[index][1]
         self.set_field(fieldname)
 
-    def do_operation_cb(self, w):
-        index = w.get_index()
+    def do_operation_cb(self, btn_w, combo_w):
+        index = combo_w.get_index()
         if index >= 0:
             fn = self.operation_table[index][1]
             fn(self.selected)

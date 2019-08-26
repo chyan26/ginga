@@ -19,8 +19,8 @@ import numpy as np
 
 from ginga.misc import Callback, Settings
 from ginga import BaseImage, AstroImage
-from ginga import RGBMap, AutoCuts, ColorDist
-from ginga import cmap, imap, colors, trcalc
+from ginga import RGBMap, AutoCuts, ColorDist, zoom
+from ginga import colors, trcalc
 from ginga.canvas import coordmap, transform
 from ginga.canvas.types.layer import DrawingCanvas
 from ginga.util import rgb_cms, addons
@@ -48,7 +48,7 @@ class ImageViewBase(Callback.Callbacks):
     using Numpy array manipulations (even color and intensity mapping)
     so that only a minimal mapping to a pixel buffer is necessary in
     concrete subclasses that connect to an actual rendering surface
-    (e.g., Qt or GTK).
+    (e.g., Qt, GTK, Tk, HTML5).
 
     Parameters
     ----------
@@ -83,40 +83,21 @@ class ImageViewBase(Callback.Callbacks):
 
         # RGB mapper
         if rgbmap:
-            self.rgbmap = rgbmap
+            # which way should the settings be migrated--
+            # rgbmap to viewer or vice-versa?
+            t_ = rgbmap.get_settings()
+            t_.share_settings(self.t_, keylist=rgbmap.settings_keys)
         else:
-            rgbmap = RGBMap.RGBMapper(self.logger)
-            self.rgbmap = rgbmap
+            rgbmap = RGBMap.RGBMapper(self.logger, settings=self.t_)
+        self.rgbmap = rgbmap
+
+        # Renderer
+        self.renderer = None
 
         # for debugging
         self.name = str(self)
 
-        # for color mapping
-        self.t_.add_defaults(color_map='gray', intensity_map='ramp',
-                             color_algorithm='linear',
-                             color_hashsize=65535)
-        for name in ('color_map', 'intensity_map', 'color_algorithm',
-                     'color_hashsize'):
-            self.t_.get_setting(name).add_callback('set', self.cmap_changed_cb)
-
         # Initialize RGBMap
-        cmap_name = self.t_.get('color_map', 'gray')
-        try:
-            cm = cmap.get_cmap(cmap_name)
-        except KeyError:
-            cm = cmap.get_cmap('gray')
-        rgbmap.set_cmap(cm)
-        imap_name = self.t_.get('intensity_map', 'ramp')
-        try:
-            im = imap.get_imap(imap_name)
-        except KeyError:
-            im = imap.get_imap('ramp')
-        rgbmap.set_imap(im)
-        hash_size = self.t_.get('color_hashsize', 65535)
-        rgbmap.set_hash_size(hash_size)
-        hash_alg = self.t_.get('color_algorithm', 'linear')
-        rgbmap.set_hash_algorithm(hash_alg)
-
         rgbmap.add_callback('changed', self.rgbmap_cb)
 
         # for scale
@@ -148,12 +129,14 @@ class ImageViewBase(Callback.Callbacks):
                              zoom_rate=math.sqrt(2.0))
         for name in ('zoom_rate', 'zoom_algorithm',
                      'scale_x_base', 'scale_y_base'):
-            self.t_.get_setting(name).add_callback('set', self.zoomalg_change_cb)
+            self.t_.get_setting(name).add_callback('set', self.zoomsetting_change_cb)
+        self.zoom = zoom.get_zoom_alg(self.t_['zoom_algorithm'])(self)
+
         self.t_.get_setting('interpolation').add_callback(
             'set', self.interpolation_change_cb)
 
         # max/min scaling
-        self.t_.add_defaults(scale_max=10000.0, scale_min=0.00001)
+        self.t_.add_defaults(scale_max=None, scale_min=None)
 
         # autozoom options
         self.autozoom_options = ('on', 'override', 'once', 'off')
@@ -174,20 +157,23 @@ class ImageViewBase(Callback.Callbacks):
             'set', self.rotation_change_cb)
 
         # misc
-        self.t_.add_defaults(auto_orient=False,
+        self.t_.add_defaults(auto_orient=True,
                              defer_redraw=True, defer_lagtime=0.025,
                              show_pan_position=False,
                              show_mode_indicator=True,
-                             show_focus_indicator=False,
+                             show_focus_indicator=None,
                              onscreen_font='Sans Serif',
-                             onscreen_font_size=24,
-                             color_fg="#D0F0E0", color_bg="#404040")
+                             onscreen_font_size=None,
+                             color_fg="#D0F0E0", color_bg="#404040",
+                             limits=None, enter_focus=None)
+        self.t_.get_setting('limits').add_callback('set', self._set_limits_cb)
 
         # embedded image "profiles"
         self.t_.add_defaults(profile_use_scale=False, profile_use_pan=False,
                              profile_use_cuts=False,
                              profile_use_transform=False,
-                             profile_use_rotation=False)
+                             profile_use_rotation=False,
+                             profile_use_color_map=False)
 
         # ICC profile support
         d = dict(icc_output_profile=None, icc_output_intent='perceptual',
@@ -198,6 +184,17 @@ class ImageViewBase(Callback.Callbacks):
             # Note: transform_cb will redraw enough to pick up
             #       ICC profile change
             self.t_.get_setting(key).add_callback('set', self.transform_cb)
+
+        # viewer profile support
+        self.use_image_profile = False
+        self.profile_keylist = ['flip_x', 'flip_y', 'swap_xy', 'scale',
+                                'pan', 'pan_coord', 'rot_deg', 'cuts',
+                                'color_algorithm', 'color_hashsize',
+                                'color_map', 'intensity_map',
+                                'color_array', 'shift_array']
+        for name in self.t_.keys():
+            self.t_.get_setting(name).add_callback('set',
+                                                   self._update_profile_cb)
 
         # Object that calculates auto cut levels
         name = self.t_.get('autocut_method', 'zscale')
@@ -225,8 +222,6 @@ class ImageViewBase(Callback.Callbacks):
         # offset from pan position (at center) in this array
         self._org_xoff = 0
         self._org_yoff = 0
-        # limits for data
-        self._limits = None
 
         # viewer window backend has its canvas origin (0, 0) in upper left
         self.origin_upper = True
@@ -275,7 +270,7 @@ class ImageViewBase(Callback.Callbacks):
         self.last_data_x = 0
         self.last_data_y = 0
 
-        self.orientMap = {
+        self.orient_map = {
             # tag: (flip_x, flip_y, swap_xy)
             1: (False, True, False),
             2: (True, True, False),
@@ -309,6 +304,7 @@ class ImageViewBase(Callback.Callbacks):
         self.coordmap = {
             'native': coordmap.NativeMapper(self),
             'window': coordmap.WindowMapper(self),
+            'percentage': coordmap.PercentageMapper(self),
             'cartesian': coordmap.CartesianMapper(self),
             'data': coordmap.DataMapper(self),
             None: coordmap.DataMapper(self),
@@ -347,8 +343,9 @@ class ImageViewBase(Callback.Callbacks):
         self.rf_late_warn_interval = 10.0
         self.rf_late_total = 0.0
         self.rf_late_count = 0
-        self.rf_early_count = 0
         self.rf_early_total = 0.0
+        self.rf_early_count = 0
+        self.rf_skip_total = 0.0
         if self.rf_timer is not None:
             self.rf_timer.add_callback('expired', self.refresh_timer_cb,
                                        self.rf_flags)
@@ -470,6 +467,14 @@ class ImageViewBase(Callback.Callbacks):
         """
         return self.logger
 
+    def set_renderer(self, renderer):
+        """Set and initialize the renderer used by this instance.
+        """
+        self.renderer = renderer
+        width, height = self.get_window_size()
+        if width > 0 and height > 0:
+            renderer.resize((width, height))
+
     def get_canvas(self):
         """Get the canvas object used by this instance.
 
@@ -502,7 +507,7 @@ class ImageViewBase(Callback.Callbacks):
         self._imgobj = None
 
         # private canvas set?
-        if not (private_canvas is None):
+        if private_canvas is not None:
             self.private_canvas = private_canvas
 
             if private_canvas != canvas:
@@ -586,10 +591,8 @@ class ImageViewBase(Callback.Callbacks):
             (see `~ginga.ColorDist`).
 
         """
-        distClass = ColorDist.get_dist(calg_name)
-        hashsize = self.rgbmap.get_hash_size()
-        dist = distClass(hashsize, **kwdargs)
-        self.set_calg(dist)
+        # TEMP: ignore kwdargs
+        self.t_.set(color_algorithm=calg_name)
 
     def get_color_algorithms(self):
         """Get available color distribution algorithm names.
@@ -603,83 +606,69 @@ class ImageViewBase(Callback.Callbacks):
         See :meth:`ginga.RGBMap.RGBMapper.set_cmap`.
 
         """
-        self.rgbmap.set_cmap(cm)
+        rgbmap = self.get_rgbmap()
+        rgbmap.set_cmap(cm)
 
     def invert_cmap(self):
         """Invert the color map.
         See :meth:`ginga.RGBMap.RGBMapper.invert_cmap`.
 
         """
-        self.rgbmap.invert_cmap()
+        rgbmap = self.get_rgbmap()
+        rgbmap.invert_cmap()
 
     def set_imap(self, im):
         """Set intensity map.
         See :meth:`ginga.RGBMap.RGBMapper.set_imap`.
 
         """
-        self.rgbmap.set_imap(im)
+        rgbmap = self.get_rgbmap()
+        rgbmap.set_imap(im)
 
     def set_calg(self, dist):
         """Set color distribution algorithm.
         See :meth:`ginga.RGBMap.RGBMapper.set_dist`.
 
         """
-        self.rgbmap.set_dist(dist)
+        rgbmap = self.get_rgbmap()
+        rgbmap.set_dist(dist)
 
     def shift_cmap(self, pct):
         """Shift color map.
         See :meth:`ginga.RGBMap.RGBMapper.shift`.
 
         """
-        self.rgbmap.shift(pct)
+        rgbmap = self.get_rgbmap()
+        rgbmap.shift(pct)
 
     def scale_and_shift_cmap(self, scale_pct, shift_pct):
         """Stretch and/or shrink the color map.
         See :meth:`ginga.RGBMap.RGBMapper.scale_and_shift`.
 
         """
-        self.rgbmap.scale_and_shift(scale_pct, shift_pct)
+        rgbmap = self.get_rgbmap()
+        rgbmap.scale_and_shift(scale_pct, shift_pct)
 
     def restore_contrast(self):
         """Restores the color map from any stretch and/or shrinkage.
         See :meth:`ginga.RGBMap.RGBMapper.reset_sarr`.
 
         """
-        self.rgbmap.reset_sarr()
+        rgbmap = self.get_rgbmap()
+        rgbmap.reset_sarr()
 
     def restore_cmap(self):
         """Restores the color map from any rotation, stretch and/or shrinkage.
         See :meth:`ginga.RGBMap.RGBMapper.restore_cmap`.
 
         """
-        self.rgbmap.restore_cmap()
+        rgbmap = self.get_rgbmap()
+        rgbmap.restore_cmap()
 
     def rgbmap_cb(self, rgbmap):
         """Handle callback for when RGB map has changed."""
         self.logger.debug("RGB map has changed.")
         self.redraw(whence=2)
-
-    def cmap_changed_cb(self, setting, value):
-        """Handle callback that is invoked when the color settings
-        have changed in some way.
-
-        """
-        self.logger.debug("Color settings have changed.")
-
-        # Update our RGBMapper with any changes
-        cmap_name = self.t_.get('color_map', "gray")
-        cm = cmap.get_cmap(cmap_name)
-        self.rgbmap.set_cmap(cm, callback=False)
-
-        imap_name = self.t_.get('intensity_map', "ramp")
-        im = imap.get_imap(imap_name)
-        self.rgbmap.set_imap(im, callback=False)
-
-        hash_size = self.t_.get('color_hashsize', 65535)
-        self.rgbmap.set_hash_size(hash_size, callback=False)
-
-        hash_alg = self.t_.get('color_algorithm', "linear")
-        self.rgbmap.set_hash_algorithm(hash_alg, callback=True)
 
     def get_rgbmap(self):
         """Get the RGB map object used by this instance.
@@ -703,6 +692,8 @@ class ImageViewBase(Callback.Callbacks):
 
         """
         self.rgbmap = rgbmap
+        t_ = rgbmap.get_settings()
+        t_.share_settings(self.t_, keylist=rgbmap.settings_keys)
         rgbmap.add_callback('changed', self.rgbmap_cb)
         self.redraw(whence=2)
 
@@ -772,6 +763,10 @@ class ImageViewBase(Callback.Callbacks):
             Add image to canvas.
 
         """
+        if not isinstance(image, BaseImage.BaseImage):
+            raise ValueError("Wrong type of object to load: %s" % (
+                str(type(image))))
+
         canvas_img = self.get_canvas_image()
 
         old_image = canvas_img.get_image()
@@ -791,7 +786,7 @@ class ImageViewBase(Callback.Callbacks):
                     #self.logger.debug("adding image to canvas %s" % self.canvas)
 
                 # move image to bottom of layers
-                self.canvas.lowerObject(canvas_img)
+                self.canvas.lower_object(canvas_img)
 
             #self.canvas.update_canvas(whence=0)
 
@@ -817,7 +812,7 @@ class ImageViewBase(Callback.Callbacks):
         self.make_callback('image-set', image)
 
     def apply_profile_or_settings(self, image):
-        """Apply an embedded profile in an image to the viewer.
+        """Apply a profile to the viewer.
 
         Parameters
         ----------
@@ -825,67 +820,122 @@ class ImageViewBase(Callback.Callbacks):
             Image object.
 
         This function is used to initialize the viewer when a new image
-        is loaded.  Either the profile settings embedded in the image or
-        the default settings are applied as specified in the preferences.
+        is loaded.  Either the embedded profile settings or the default
+        settings are applied as specified in the channel preferences.
         """
         profile = image.get('profile', None)
-
+        keylist = []
         with self.suppress_redraw:
-            # initialize transform
-            if ((profile is not None) and
-                    self.t_['profile_use_transform'] and 'flip_x' in profile):
-                flip_x, flip_y = profile['flip_x'], profile['flip_y']
-                swap_xy = profile['swap_xy']
-                self.transform(flip_x, flip_y, swap_xy)
-            else:
+            if profile is not None:
+                if self.t_['profile_use_transform'] and 'flip_x' in profile:
+                    keylist.extend(['flip_x', 'flip_y', 'swap_xy'])
+
+                if self.t_['profile_use_scale'] and 'scale' in profile:
+                    keylist.extend(['scale'])
+
+                if self.t_['profile_use_pan'] and 'pan' in profile:
+                    keylist.extend(['pan'])
+
+                if self.t_['profile_use_rotation'] and 'rot_deg' in profile:
+                    keylist.extend(['rot_deg'])
+
+                if self.t_['profile_use_cuts'] and 'cuts' in profile:
+                    keylist.extend(['cuts'])
+
+                if self.t_['profile_use_color_map'] and 'color_map' in profile:
+                    keylist.extend(['color_algorithm', 'color_hashsize',
+                                    'color_map', 'intensity_map',
+                                    'color_array', 'shift_array'])
+
+                self.apply_profile(profile, keylist=keylist)
+
+            # proceed with initialization that is not in the profile
+            # initialize transforms
+            if self.t_['auto_orient'] and 'flip_x' not in keylist:
                 self.logger.debug(
                     "auto orient (%s)" % (self.t_['auto_orient']))
-                if self.t_['auto_orient']:
-                    self.auto_orient()
+                self.auto_orient()
 
             # initialize scale
-            if ((profile is not None) and self.t_['profile_use_scale'] and
-                    'scale_x' in profile):
-                scale_x, scale_y = profile['scale_x'], profile['scale_y']
-                self.logger.debug("restoring scale to (%f,%f)" % (
-                    scale_x, scale_y))
-                self.scale_to(scale_x, scale_y, no_reset=True)
-            else:
+            if self.t_['autozoom'] != 'off' and 'scale' not in keylist:
                 self.logger.debug("auto zoom (%s)" % (self.t_['autozoom']))
-                if self.t_['autozoom'] != 'off':
-                    self.zoom_fit(no_reset=True)
+                self.zoom_fit(no_reset=True)
 
             # initialize pan position
-            if ((profile is not None) and self.t_['profile_use_pan'] and
-                    'pan_x' in profile):
-                pan_x, pan_y = profile['pan_x'], profile['pan_y']
-                self.logger.debug("restoring pan position to (%f,%f)" % (
-                    pan_x, pan_y))
-                self.set_pan(pan_x, pan_y, no_reset=True)
-            else:
-                # NOTE: False a possible value from historical use
+            # NOTE: False a possible value from historical use
+            if (self.t_['autocenter'] not in ('off', False) and
+                'pan' not in keylist):
                 self.logger.debug(
                     "auto center (%s)" % (self.t_['autocenter']))
-                if not self.t_['autocenter'] in ('off', False):
-                    self.center_image(no_reset=True)
-
-            # initialize rotation
-            if ((profile is not None) and
-                    self.t_['profile_use_rotation'] and 'rot_deg' in profile):
-                rot_deg = profile['rot_deg']
-                self.rotate(rot_deg)
+                self.center_image(no_reset=True)
 
             # initialize cuts
-            if ((profile is not None) and
-                    self.t_['profile_use_cuts'] and 'cutlo' in profile):
-                loval, hival = profile['cutlo'], profile['cuthi']
-                self.cut_levels(loval, hival, no_reset=True)
-            else:
+            if self.t_['autocuts'] != 'off' and 'cuts' not in keylist:
                 self.logger.debug("auto cuts (%s)" % (self.t_['autocuts']))
-                if self.t_['autocuts'] != 'off':
-                    self.auto_levels()
+                self.auto_levels()
 
-            self.canvas.update_canvas(whence=0)
+            # save the profile in the image
+            if self.use_image_profile:
+                self.checkpoint_profile()
+
+            self.redraw(whence=0)
+
+    def apply_profile(self, profile, keylist=None):
+        """Apply a profile to the viewer.
+
+        Parameters
+        ----------
+        profile : `~ginga.misc.Settings.SettingGroup`
+
+        This function is used to initialize the viewer to a known state.
+        The keylist, if given, will limit the items to be transferred
+        from the profile to viewer settings, otherwise all items are
+        copied.
+        """
+        with self.suppress_redraw:
+            profile.copy_settings(self.t_, keylist=keylist,
+                                  callback=True)
+            self.redraw(whence=0)
+
+    def capture_profile(self, profile):
+        self.t_.copy_settings(profile)
+        self.logger.debug("profile attributes set")
+
+    def checkpoint_profile(self):
+        profile = self.save_profile()
+        self.capture_profile(profile)
+        return profile
+
+    def save_profile(self, **params):
+        """Save the given parameters into profile settings.
+
+        Parameters
+        ----------
+        params : dict
+            Keywords and values to be saved.
+
+        """
+        image = self.get_image()
+        if (image is None):
+            return
+
+        profile = image.get('profile', None)
+        if profile is None:
+            # If image has no profile then create one
+            profile = Settings.SettingGroup()
+            image.set(profile=profile)
+
+        self.logger.debug("saving to image profile: params=%s" % (
+            str(params)))
+        profile.set(**params)
+        return profile
+
+    def _update_profile_cb(self, setting, value):
+        key = setting.name
+        if self.use_image_profile:
+            # ? and key in self.profile_keylist
+            kwargs = {key: value}
+            self.save_profile(**kwargs)
 
     def _image_modified_cb(self, image):
 
@@ -960,48 +1010,6 @@ class ImageViewBase(Callback.Callbacks):
         except KeyError:
             pass
 
-    def save_profile(self, **params):
-        """Save the given parameters into profile settings.
-
-        Parameters
-        ----------
-        params : dict
-            Keywords and values to be saved.
-
-        """
-        image = self.get_image()
-        if (image is None):
-            return
-
-        profile = image.get('profile', None)
-        if (profile is None):
-            # If image has no profile then create one
-            profile = Settings.SettingGroup()
-            image.set(profile=profile)
-
-        self.logger.debug("saving to image profile: params=%s" % (
-            str(params)))
-        profile.set(**params)
-
-    ## def apply_profile(self, image, profile, redraw=False):
-
-    ##     self.logger.info("applying existing profile found in image")
-
-    ##     if profile.has_key('scale_x'):
-    ##         scale_x, scale_y = profile['scale_x'], profile['scale_y']
-    ##         self.scale_to(scale_x, scale_y, no_reset=True, redraw=False)
-
-    ##     if profile.has_key('pan_x'):
-    ##         pan_x, pan_y = profile['pan_x'], profile['pan_y']
-    ##         self.set_pan(pan_x, pan_y, no_reset=True, redraw=False)
-
-    ##     if profile.has_key('cutlo'):
-    ##         loval, hival = profile['cutlo'], profile['cuthi']
-    ##         self.cut_levels(loval, hival, no_reset=True, redraw=False)
-
-    ##     if redraw:
-    ##         self.redraw(whence=0)
-
     def copy_to_dst(self, target):
         """Extract our image and call :meth:`set_image` on the target with it.
 
@@ -1023,13 +1031,17 @@ class ImageViewBase(Callback.Callbacks):
             See :meth:`get_rgb_object`.
 
         """
-        if not self.defer_redraw:
-            if self._hold_redraw_cnt == 0:
-                self.redraw_now(whence=whence)
-            return
-
         with self._defer_lock:
             whence = min(self._defer_whence, whence)
+
+            if not self.defer_redraw:
+                if self._hold_redraw_cnt == 0:
+                    self._defer_whence = self._defer_whence_reset
+                    self.redraw_now(whence=whence)
+                else:
+                    self._defer_whence = whence
+                return
+
             elapsed = time.time() - self.time_last_redraw
 
             # If there is no redraw scheduled, or we are overdue for one:
@@ -1147,6 +1159,7 @@ class ImageViewBase(Callback.Callbacks):
         self.rf_early_count = 0
         self.rf_early_total = 0.0
         self.rf_delta_total = 0.0
+        self.rf_skip_total = 0.0
         self.rf_start_time = time.time()
         self.rf_deadline = self.rf_start_time
         self.refresh_timer_cb(self.rf_timer, self.rf_flags)
@@ -1181,9 +1194,12 @@ class ImageViewBase(Callback.Callbacks):
         early_avg = self.rf_early_total / max(1, self.rf_early_count)
         early_pct = self.rf_early_count / max(1.0, float(self.rf_timer_count)) * 100
 
+        balance = self.rf_late_total - self.rf_early_total
+
         stats = dict(fps=fps, jitter=jitter,
                      early_avg=early_avg, early_pct=early_pct,
-                     late_avg=late_avg, late_pct=late_pct)
+                     late_avg=late_avg, late_pct=late_pct,
+                     balance=balance)
         return stats
 
     def refresh_timer_cb(self, timer, flags):
@@ -1218,16 +1234,24 @@ class ImageViewBase(Callback.Callbacks):
             self.rf_late_total += delta
             self.rf_late_count += 1
             late_avg = self.rf_late_total / self.rf_late_count
-            # skip a redraw and attempt to catch up
             adjust = - (late_avg / 2.0)
-
+            self.rf_skip_total += delta
+            if self.rf_skip_total < self.rf_rate:
+                self.rf_draw_count += 1
+                # TODO: can we optimize whence?
+                self.redraw_now(whence=0)
+            else:
+                # <-- we are behind by amount of time equal to one frame.
+                # skip a redraw and attempt to catch up some time
+                self.rf_skip_total = 0
         else:
             if start_time < deadline:
                 # we are early
                 self.rf_early_total += delta
                 self.rf_early_count += 1
+                self.rf_skip_total = max(0.0, self.rf_skip_total - delta)
                 early_avg = self.rf_early_total / self.rf_early_count
-                adjust = early_avg / 2.0
+                adjust = early_avg / 4.0
 
             self.rf_draw_count += 1
             # TODO: can we optimize whence?
@@ -1290,13 +1314,11 @@ class ImageViewBase(Callback.Callbacks):
 
         if not self._self_scaling:
             rgbobj = self.get_rgb_object(whence=whence)
-            self.render_image(rgbobj, self._dst_x, self._dst_y)
+            self.renderer.render_image(rgbobj, self._dst_x, self._dst_y)
 
         self.private_canvas.draw(self)
 
-        # TODO: see if we can deprecate this fake callback
-        if whence <= 0:
-            self.make_callback('redraw')
+        self.make_callback('redraw', whence)
 
         if whence < 2:
             self.check_cursor_location()
@@ -1310,7 +1332,7 @@ class ImageViewBase(Callback.Callbacks):
         data_x, data_y = self.get_data_xy(self.last_win_x,
                                           self.last_win_y)
         if (data_x != self.last_data_x or
-                data_y != self.last_data_y):
+            data_y != self.last_data_y):
             self.last_data_x, self.last_data_y = data_x, data_y
             self.logger.debug("cursor location changed %.4f,%.4f => %.4f,%.4f" % (
                 self.last_data_x, self.last_data_y, data_x, data_y))
@@ -1323,7 +1345,7 @@ class ImageViewBase(Callback.Callbacks):
 
         return data_x, data_y
 
-    def getwin_array(self, order='RGB', alpha=1.0):
+    def getwin_array(self, order='RGB', alpha=1.0, dtype=None):
         """Get Numpy data array for display window.
 
         Parameters
@@ -1334,6 +1356,9 @@ class ImageViewBase(Callback.Callbacks):
         alpha : float
             Opacity.
 
+        dtype : numpy dtype
+            Numpy data type desired; defaults to rgb mapper setting.
+
         Returns
         -------
         outarr : ndarray
@@ -1343,37 +1368,36 @@ class ImageViewBase(Callback.Callbacks):
         order = order.upper()
         depth = len(order)
 
+        if dtype is None:
+            rgbmap = self.get_rgbmap()
+            dtype = rgbmap.dtype
+
         # Prepare data array for rendering
-        data = self._rgbobj.get_array(order)
+        data = self._rgbobj.get_array(order, dtype=dtype)
 
         # NOTE [A]
         height, width, depth = data.shape
 
         imgwin_wd, imgwin_ht = self.get_window_size()
 
-        # create RGBA array for output
-        outarr = np.zeros((imgwin_ht, imgwin_wd, depth), dtype='uint8')
-
-        # fill image array with the background color
+        # create RGBA image array with the background color for output
         r, g, b = self.img_bg
-        bgval = dict(A=int(255 * alpha), R=int(255 * r), G=int(255 * g),
-                     B=int(255 * b))
-
-        for i in range(len(order)):
-            outarr[:, :, i] = bgval[order[i]]
+        outarr = trcalc.make_filled_array((imgwin_ht, imgwin_wd, len(order)),
+                                          dtype, order, r, g, b, alpha)
 
         # overlay our data
         trcalc.overlay_image(outarr, (self._dst_x, self._dst_y),
-                             data, flipy=False, fill=False, copy=False)
+                             data, dst_order=order, src_order=order,
+                             flipy=False, fill=False, copy=False)
 
         return outarr
 
-    def getwin_buffer(self, order='RGB'):
+    def getwin_buffer(self, order='RGB', alpha=1.0, dtype=None):
         """Same as :meth:`getwin_array`, but with the output array converted
         to C-order Python bytes.
 
         """
-        outarr = self.getwin_array(order=order)
+        outarr = self.getwin_array(order=order, alpha=alpha, dtype=dtype)
 
         if not hasattr(outarr, 'tobytes'):
             # older versions of numpy
@@ -1403,17 +1427,17 @@ class ImageViewBase(Callback.Callbacks):
                ``(ll_pt, ur_pt)``.
 
         """
-        if self._limits is not None:
-            # User set limits
-            limits = self._limits
+        limits = self.t_['limits']
 
-        else:
+        if limits is None:
             # No user defined limits.  If there is an image loaded
             # use its dimensions as the limits
             image = self.get_image()
             if image is not None:
                 wd, ht = image.get_size()
-                limits = ((0.0, 0.0), (float(wd), float(ht)))
+                limits = ((self.data_off, self.data_off),
+                          (float(wd - 1 + self.data_off),
+                           float(ht - 1 + self.data_off)))
 
             else:
                 # Calculate limits based on plotted points, if any
@@ -1441,13 +1465,18 @@ class ImageViewBase(Callback.Callbacks):
             ``(ll_pt, ur_pt)``.
         """
         if limits is not None:
-            assert len(limits) == 2, ValueError("limits takes a 2 tuple")
+            if len(limits) != 2:
+                raise ValueError("limits takes a 2 tuple, or None")
 
             # convert to data coordinates
             crdmap = self.get_coordmap(coord)
             limits = crdmap.to_data(limits)
 
-        self._limits = limits
+        self.t_.set(limits=limits)
+
+    def _set_limits_cb(self, setting, limits):
+        # TODO: deprecate this chained callback and have users just use
+        # 'set' callback for "limits" setting ?
         self.make_callback('limits-set', limits)
 
     def get_rgb_object(self, whence=0):
@@ -1472,7 +1501,7 @@ class ImageViewBase(Callback.Callbacks):
             RGB object.
 
         """
-        time_start = time.time()
+        time_start = t2 = t3 = time.time()
         win_wd, win_ht = self.get_window_size()
         order = self.get_rgb_order()
 
@@ -1486,8 +1515,14 @@ class ImageViewBase(Callback.Callbacks):
 
             # create backing image
             depth = len(order)
-            rgba = np.zeros((ht, wd, depth), dtype=np.uint8)
+            rgbmap = self.get_rgbmap()
+            # make backing image with the background color
+            r, g, b = self.img_bg
+            rgba = trcalc.make_filled_array((ht, wd, depth), rgbmap.dtype,
+                                            order, r, g, b, 1.0)
+
             self._rgbarr = rgba
+            t2 = time.time()
 
         if (whence <= 2.0) or (self._rgbarr2 is None):
             # Apply any RGB image overlays
@@ -1501,6 +1536,7 @@ class ImageViewBase(Callback.Callbacks):
             if (working_profile is not None) and (output_profile is not None):
                 self.convert_via_profile(self._rgbarr2, order,
                                          working_profile, output_profile)
+            t3 = time.time()
 
         if (whence <= 2.5) or (self._rgbobj is None):
             rotimg = self._rgbarr2
@@ -1514,8 +1550,12 @@ class ImageViewBase(Callback.Callbacks):
             self._rgbobj = RGBMap.RGBPlanes(rotimg, order)
 
         time_end = time.time()
-        self.logger.debug("times: total=%.4f" % (
+        ## self.logger.debug("times: total=%.4f" % (
+        ##     (time_end - time_start)))
+        self.logger.debug("times: t1=%.4f t2=%.4f t3=%.4f total=%.4f" % (
+            t2 - time_start, t3 - t2, time_end - t3,
             (time_end - time_start)))
+
         return self._rgbobj
 
     def _calc_bg_dimensions(self, scale_x, scale_y,
@@ -1670,15 +1710,15 @@ class ImageViewBase(Callback.Callbacks):
         return data
 
     def overlay_images(self, canvas, data, whence=0.0):
-        """Overlay data on all the canvas objects.
+        """Overlay data from any canvas image objects.
 
         Parameters
         ----------
         canvas : `~ginga.canvas.types.layer.DrawingCanvas`
-            Canvas to overlay.
+            Canvas containing possible images to overlay.
 
         data : ndarray
-            Data to overlay.
+            Output array on which to overlay image data.
 
         whence
              See :meth:`get_rgb_object`.
@@ -1858,7 +1898,7 @@ class ImageViewBase(Callback.Callbacks):
 
     def get_data_pct(self, xpct, ypct):
         """Calculate new data size for the given axis ratios.
-        See :meth:`get_data_size`.
+        See :meth:`get_limits`.
 
         Parameters
         ----------
@@ -1871,9 +1911,11 @@ class ImageViewBase(Callback.Callbacks):
             Scaled dimensions.
 
         """
-        width, height = self.get_data_size()
-        x = int(float(xpct) * (width - 1))
-        y = int(float(ypct) * (height - 1))
+        xy_mn, xy_mx = self.get_limits()
+        width = abs(xy_mx[0] - xy_mn[0])
+        height = abs(xy_mx[1] - xy_mn[1])
+
+        x, y = int(float(xpct) * width), int(float(ypct) * height)
         return (x, y)
 
     def get_pan_rect(self):
@@ -1961,10 +2003,25 @@ class ImageViewBase(Callback.Callbacks):
                 "resulting scale (%f, %f) would result in pixel size "
                 "approaching window size" % (scale_x, scale_y))
 
+    def set_scale(self, scale, no_reset=False):
+        """Scale the image in a channel.
+        Also see :meth:`zoom_to`.
+
+        Parameters
+        ----------
+        scale : tuple of float
+            Scaling factors for the image in the X and Y axes.
+
+        no_reset : bool
+            Do not reset ``autozoom`` setting.
+
+        """
+        return self.scale_to(*scale[:2], no_reset=no_reset)
+
     def scale_to(self, scale_x, scale_y, no_reset=False):
         """Scale the image in a channel.
-        This only changes the relevant settings; The image is not modified.
-        Also see :meth:`zoom_to`.
+        This only changes the viewer settings; the image is not modified
+        in any way.  Also see :meth:`zoom_to`.
 
         Parameters
         ----------
@@ -2028,27 +2085,9 @@ class ImageViewBase(Callback.Callbacks):
         if (not no_reset) and (self.t_['autozoom'] in ('override', 'once')):
             self.t_.set(autozoom='off')
 
-        if self.t_['profile_use_scale']:
-            # Save scale with this image embedded profile
-            self.save_profile(scale_x=scale_x, scale_y=scale_y)
-
     def scale_cb(self, setting, value):
         """Handle callback related to image scaling."""
-        scale_x, scale_y = value
-
-        if self.t_['zoom_algorithm'] == 'rate':
-            zoom_x = math.log(scale_x / self.t_['scale_x_base'],
-                              self.t_['zoom_rate'])
-            zoom_y = math.log(scale_y / self.t_['scale_y_base'],
-                              self.t_['zoom_rate'])
-            # TODO: avg, max?
-            zoomlevel = min(zoom_x, zoom_y)
-        else:
-            maxscale = max(scale_x, scale_y)
-            zoomlevel = maxscale
-            if zoomlevel < 1.0:
-                zoomlevel = - (1.0 / zoomlevel)
-
+        zoomlevel = self.zoom.calc_level(value)
         self.t_.set(zoomlevel=zoomlevel)
 
         self.redraw(whence=0)
@@ -2128,10 +2167,8 @@ class ImageViewBase(Callback.Callbacks):
         """
         scalefactor = self.get_scale_max()
         if scalefactor >= 1.0:
-            #text = '%dx' % (int(scalefactor))
             text = '%.2fx' % (scalefactor)
         else:
-            #text = '1/%dx' % (int(1.0/scalefactor))
             text = '1/%.2fx' % (1.0 / scalefactor)
         return text
 
@@ -2155,53 +2192,34 @@ class ImageViewBase(Callback.Callbacks):
             Do not reset ``autozoom`` setting.
 
         """
-        if self.t_['zoom_algorithm'] == 'rate':
-            scale_x = self.t_['scale_x_base'] * (
-                self.t_['zoom_rate'] ** zoomlevel)
-            scale_y = self.t_['scale_y_base'] * (
-                self.t_['zoom_rate'] ** zoomlevel)
-        else:
-            if zoomlevel >= 1.0:
-                scalefactor = zoomlevel
-            elif zoomlevel < -1.0:
-                scalefactor = 1.0 / float(abs(zoomlevel))
-            else:
-                scalefactor = 1.0
-            scale_x = scale_y = scalefactor
-
-        ## print("scale_x=%f scale_y=%f zoom=%f" % (
-        ##     scale_x, scale_y, zoomlevel))
+        scale_x, scale_y = self.zoom.calc_scale(zoomlevel)
         self._scale_to(scale_x, scale_y, no_reset=no_reset)
 
-    def zoom_in(self):
+    def zoom_in(self, incr=1.0):
         """Zoom in a level.
         Also see :meth:`zoom_to`.
 
-        """
-        if self.t_['zoom_algorithm'] == 'rate':
-            self.zoom_to(self.t_['zoomlevel'] + 1)
-        else:
-            zl = int(self.t_['zoomlevel'])
-            if (zl >= 1) or (zl <= -3):
-                self.zoom_to(zl + 1)
-            else:
-                self.zoom_to(1)
+        Parameters
+        ----------
+        incr : float (optional, defaults to 1)
+            The value to increase the zoom level
 
-    def zoom_out(self):
+        """
+        level = self.zoom.calc_level(self.t_['scale'])
+        self.zoom_to(level + incr)
+
+    def zoom_out(self, decr=1.0):
         """Zoom out a level.
         Also see :meth:`zoom_to`.
 
+        Parameters
+        ----------
+        decr : float (optional, defaults to 1)
+            The value to decrease the zoom level
+
         """
-        if self.t_['zoom_algorithm'] == 'rate':
-            self.zoom_to(self.t_['zoomlevel'] - 1)
-        else:
-            zl = int(self.t_['zoomlevel'])
-            if zl == 1:
-                self.zoom_to(-2)
-            elif (zl >= 2) or (zl <= -2):
-                self.zoom_to(zl - 1)
-            else:
-                self.zoom_to(1)
+        level = self.zoom.calc_level(self.t_['scale'])
+        self.zoom_to(level - decr)
 
     def zoom_fit(self, no_reset=False):
         """Zoom to fit display window.
@@ -2213,9 +2231,9 @@ class ImageViewBase(Callback.Callbacks):
             Do not reset ``autozoom`` setting.
 
         """
-        # calculate actual width of the image, considering rotation
+        # calculate actual width of the limits/image, considering rotation
         try:
-            width, height = self.get_data_size()
+            xy_mn, xy_mx = self.get_limits()
 
         except ImageViewNoDataError:
             return
@@ -2234,34 +2252,29 @@ class ImageViewBase(Callback.Callbacks):
             self.center_image(no_reset=no_reset)
 
             ctr_x, ctr_y, rot_deg = self.get_rotation_info()
-            min_x, min_y, max_x, max_y = 0, 0, 0, 0
-            for x, y in ((0, 0), (width - 1, 0), (width - 1, height - 1),
-                         (0, height - 1)):
-                x0, y0 = trcalc.rotate_pt(x, y, rot_deg, xoff=ctr_x, yoff=ctr_y)
-                min_x, min_y = min(min_x, x0), min(min_y, y0)
-                max_x, max_y = max(max_x, x0), max(max_y, y0)
+
+            # Find min/max extents of limits as shown by viewer
+            xs = np.array((xy_mn[0], xy_mx[0], xy_mx[0], xy_mn[0]))
+            ys = np.array((xy_mn[1], xy_mn[1], xy_mx[1], xy_mx[1]))
+            x0, y0 = trcalc.rotate_pt(xs, ys, rot_deg, xoff=ctr_x, yoff=ctr_y)
+
+            min_x, min_y = np.min(x0), np.min(y0)
+            max_x, max_y = np.max(x0), np.max(y0)
 
             width, height = max_x - min_x, max_y - min_y
             if min(width, height) <= 0:
                 return
 
             # Calculate optimum zoom level to still fit the window size
-            if self.t_['zoom_algorithm'] == 'rate':
-                scale_x = (float(wwidth) /
-                           (float(width) * self.t_['scale_x_base']))
-                scale_y = (float(wheight) /
-                           (float(height) * self.t_['scale_y_base']))
+            scale_x = (float(wwidth) /
+                       (float(width) * self.t_['scale_x_base']))
+            scale_y = (float(wheight) /
+                       (float(height) * self.t_['scale_y_base']))
 
-                scalefactor = min(scale_x, scale_y)
-                # account for t_[scale_x/y_base]
-                scale_x = scalefactor * self.t_['scale_x_base']
-                scale_y = scalefactor * self.t_['scale_y_base']
-            else:
-                scale_x = float(wwidth) / float(width)
-                scale_y = float(wheight) / float(height)
-
-                scalefactor = min(scale_x, scale_y)
-                scale_x = scale_y = scalefactor
+            scalefactor = min(scale_x, scale_y)
+            # account for t_[scale_x/y_base]
+            scale_x = scalefactor * self.t_['scale_x_base']
+            scale_y = scalefactor * self.t_['scale_y_base']
 
             self._scale_to(scale_x, scale_y, no_reset=no_reset)
 
@@ -2277,7 +2290,7 @@ class ImageViewBase(Callback.Callbacks):
             Zoom level.
 
         """
-        return self.t_['zoomlevel']
+        return self.zoom.calc_level(self.t_['scale'])
 
     def get_zoomrate(self):
         """Get zoom rate.
@@ -2306,29 +2319,34 @@ class ImageViewBase(Callback.Callbacks):
 
         Returns
         -------
-        name : {'rate', 'step'}
-            Zoom algorithm.
+        name : str
+            Name of the zoom algorithm in use.
 
         """
-        return self.t_['zoom_algorithm']
+        return str(self.zoom)
 
     def set_zoom_algorithm(self, name):
         """Set zoom algorithm.
 
         Parameters
         ----------
-        name : {'rate', 'step'}
-            Zoom algorithm.
+        name : str
+            Name of a zoom algorithm to use.
 
         """
         name = name.lower()
-        assert name in ('step', 'rate'), \
-            ImageViewError("Alg '%s' must be one of: step, rate" % name)
+        alg_names = list(zoom.get_zoom_alg_names())
+        if name not in alg_names:
+            raise ImageViewError("Alg '%s' must be one of: %s" % (
+                name, ', '.join(alg_names)))
         self.t_.set(zoom_algorithm=name)
 
-    def zoomalg_change_cb(self, setting, value):
+    def zoomsetting_change_cb(self, setting, value):
         """Handle callback related to changes in zoom."""
-        self.zoom_to(self.t_['zoomlevel'])
+        alg_name = self.t_['zoom_algorithm']
+        self.zoom = zoom.get_zoom_alg(alg_name)(self)
+
+        self.zoom_to(self.get_zoom())
 
     def interpolation_change_cb(self, setting, value):
         """Handle callback related to changes in interpolation."""
@@ -2397,12 +2415,12 @@ class ImageViewBase(Callback.Callbacks):
         return self.autozoom_options
 
     def set_pan(self, pan_x, pan_y, coord='data', no_reset=False):
-        """Set pan behavior.
+        """Set pan position.
 
         Parameters
         ----------
         pan_x, pan_y : float
-            Pan positions.
+            Pan positions in X and Y.
 
         coord : {'data', 'wcs'}
             Indicates whether the given pan positions are in data or WCS space.
@@ -2411,8 +2429,10 @@ class ImageViewBase(Callback.Callbacks):
             Do not reset ``autocenter`` setting.
 
         """
+        pan_pos = (pan_x, pan_y)
+
         with self.suppress_redraw:
-            self.t_.set(pan=(pan_x, pan_y), pan_coord=coord)
+            self.t_.set(pan=pan_pos, pan_coord=coord)
             self._reset_bbox()
 
         # If user specified "override" or "once" for auto center, then turn off
@@ -2420,13 +2440,9 @@ class ImageViewBase(Callback.Callbacks):
         if (not no_reset) and (self.t_['autocenter'] in ('override', 'once')):
             self.t_.set(autocenter='off')
 
-        if self.t_['profile_use_pan']:
-            # Save pan position with this image embedded profile
-            self.save_profile(pan_x=pan_x, pan_y=pan_y)
-
     def pan_cb(self, setting, value):
         """Handle callback related to changes in pan."""
-        pan_x, pan_y = value
+        pan_x, pan_y = value[:2]
 
         self.logger.debug("pan set to %.2f,%.2f" % (pan_x, pan_y))
         self.redraw(whence=0)
@@ -2446,7 +2462,7 @@ class ImageViewBase(Callback.Callbacks):
             X and Y positions, in that order.
 
         """
-        pan_x, pan_y = self.t_['pan']
+        pan_x, pan_y = self.t_['pan'][:2]
         if coord == 'wcs':
             if self.t_['pan_coord'] == 'data':
                 image = self.get_image()
@@ -2493,12 +2509,15 @@ class ImageViewBase(Callback.Callbacks):
 
         """
         try:
-            width, height = self.get_data_size()
+            xy_mn, xy_mx = self.get_limits()
 
-        except ImageViewNoDataError:
+        except Exception as e:
+            self.logger.error("Can't compute limits: %s" % (str(e)))
             return
 
-        data_x, data_y = width * pct_x, height * pct_y
+        data_x = (xy_mn[0] + xy_mx[0]) * pct_x
+        data_y = (xy_mn[1] + xy_mx[1]) * pct_y
+
         self.panset_xy(data_x, data_y)
 
     def center_image(self, no_reset=True):
@@ -2511,16 +2530,21 @@ class ImageViewBase(Callback.Callbacks):
 
         """
         try:
-            width, height = self.get_data_size()
+            xy_mn, xy_mx = self.get_limits()
+            data_x = float(xy_mn[0] + xy_mx[0]) / 2.0
+            data_y = float(xy_mn[1] + xy_mx[1]) / 2.0
 
         except ImageViewNoDataError:
-            return
+            # No data, so try to get center of any plotted objects
+            canvas = self.get_canvas()
+            try:
+                data_x, data_y = canvas.get_center_pt()[:2]
 
-        data_x, data_y = float(width) / 2.0, float(height) / 2.0
+            except Exception as e:
+                self.logger.error("Can't compute center point: %s" % (str(e)))
+                return
+
         self.panset_xy(data_x, data_y, no_reset=no_reset)
-        # See Footnote [1]
-        ## if redraw:
-        ##     self.redraw(whence=0)
 
         if self.t_['autocenter'] == 'once':
             self.t_.set(autocenter='off')
@@ -2600,10 +2624,6 @@ class ImageViewBase(Callback.Callbacks):
         # manually
         if (not no_reset) and (self.t_['autocuts'] in ('once', 'override')):
             self.t_.set(autocuts='off')
-
-        if self.t_['profile_use_cuts']:
-            # Save cut levels with this image embedded profile
-            self.save_profile(cutlo=loval, cuthi=hival)
 
     def auto_levels(self, autocuts=None):
         """Apply auto-cut levels on the image view.
@@ -2743,20 +2763,17 @@ class ImageViewBase(Callback.Callbacks):
         with self.suppress_redraw:
             self.t_.set(flip_x=flip_x, flip_y=flip_y, swap_xy=swap_xy)
 
-        if self.t_['profile_use_transform']:
-            # Save transform with this image embedded profile
-            self.save_profile(flip_x=flip_x, flip_y=flip_y, swap_xy=swap_xy)
-
     def transform_cb(self, setting, value):
         """Handle callback related to changes in transformations."""
         self.make_callback('transform')
+
         # whence=0 because need to calculate new extents for proper
         # cutout for rotation (TODO: always make extents consider
         #  room for rotation)
         whence = 0
         self.redraw(whence=whence)
 
-    def copy_attributes(self, dst_fi, attrlist):
+    def copy_attributes(self, dst_fi, attrlist, share=False):
         """Copy interesting attributes of our configuration to another
         image view.
 
@@ -2770,36 +2787,42 @@ class ImageViewBase(Callback.Callbacks):
             ``'rotation'``, ``'cutlevels'``, ``'rgbmap'``, ``'zoom'``,
             ``'pan'``, ``'autocuts'``.
 
+        share : bool
+            If True, the designated settings will be shared, otherwise the
+            values are simply copied.
         """
+        # TODO: change API to just go with settings names?
+        keylist = []
+        if 'transforms' in attrlist:
+            keylist.extend(['flip_x', 'flip_y', 'swap_xy'])
+
+        if 'rotation' in attrlist:
+            keylist.extend(['rot_deg'])
+
+        if 'autocuts' in attrlist:
+            keylist.extend(['autocut_method', 'autocut_params'])
+
+        if 'cutlevels' in attrlist:
+            keylist.extend(['cuts'])
+
+        if 'rgbmap' in attrlist:
+            keylist.extend(['color_algorithm', 'color_hashsize',
+                            'color_map', 'intensity_map',
+                            'color_array', 'shift_array'])
+
+        if 'zoom' in attrlist:
+            keylist.extend(['scale'])
+
+        if 'pan' in attrlist:
+            keylist.extend(['pan'])
+
         with dst_fi.suppress_redraw:
-            if 'transforms' in attrlist:
-                dst_fi.transform(self.t_['flip_x'], self.t_['flip_y'],
-                                 self.t_['swap_xy'])
-
-            if 'rotation' in attrlist:
-                dst_fi.rotate(self.t_['rot_deg'])
-
-            if 'autocuts' in attrlist:
-                dst_fi.t_.set(autocut_method=self.t_['autocut_method'],
-                              autocut_params=self.t_['autocut_params'])
-
-            if 'cutlevels' in attrlist:
-                loval, hival = self.t_['cuts']
-                dst_fi.cut_levels(loval, hival)
-
-            if 'rgbmap' in attrlist:
-                #dst_fi.set_rgbmap(self.rgbmap)
-                #dst_fi.rgbmap = self.rgbmap
-                self.rgbmap.copy_attributes(dst_fi.rgbmap)
-
-            if 'zoom' in attrlist:
-                dst_fi.zoom_to(self.t_['zoomlevel'])
-
-            if 'pan' in attrlist:
-                pan_x, pan_y = self.get_pan()[:2]
-                pan_coord = self.t_['pan_coord']
-                dst_fi.set_pan(pan_x, pan_y, coord=pan_coord)
-
+            if share:
+                self.t_.share_settings(dst_fi.get_settings(),
+                                       keylist=keylist)
+            else:
+                self.t_.copy_settings(dst_fi.get_settings(),
+                                      keylist=keylist)
             dst_fi.redraw(whence=0)
 
     def get_rotation(self):
@@ -2828,10 +2851,6 @@ class ImageViewBase(Callback.Callbacks):
 
         """
         self.t_.set(rot_deg=deg)
-
-        if self.t_['profile_use_rotation']:
-            # Save rotation with this image embedded profile
-            self.save_profile(rot_deg=deg)
 
     def rotation_change_cb(self, setting, value):
         """Handle callback related to changes in rotation angle."""
@@ -2898,15 +2917,15 @@ class ImageViewBase(Callback.Callbacks):
         if header:
             # Auto-orientation
             orient = header.get('Orientation', None)
-            if not orient:
+            if orient is None:
                 orient = header.get('Image Orientation', None)
+            if orient is not None:
                 self.logger.debug("orientation [%s]" % orient)
-            if orient:
                 try:
                     orient = int(str(orient))
                     self.logger.info(
                         "setting orientation from metadata [%d]" % (orient))
-                    flip_x, flip_y, swap_xy = self.orientMap[orient]
+                    flip_x, flip_y, swap_xy = self.orient_map[orient]
 
                     self.transform(flip_x, flip_y, swap_xy)
                     invert_y = False
@@ -2914,7 +2933,6 @@ class ImageViewBase(Callback.Callbacks):
                 except Exception as e:
                     # problems figuring out orientation--let it be
                     self.logger.error("orientation error: %s" % str(e))
-                    pass
 
         if invert_y:
             flip_x, flip_y, swap_xy = self.get_transforms()
@@ -2973,6 +2991,11 @@ class ImageViewBase(Callback.Callbacks):
                                trcat.ScaleTransform(self) +
                                trcat.RotationTransform(self) +
                                trcat.CartesianWindowTransform(self)),
+            'data_to_percentage': (trcat.DataCartesianTransform(self) +
+                                   trcat.ScaleTransform(self) +
+                                   trcat.RotationTransform(self) +
+                                   trcat.CartesianWindowTransform(self) +
+                                   trcat.WindowPercentageTransform(self)),
             'data_to_native': (trcat.DataCartesianTransform(self) +
                                trcat.ScaleTransform(self) +
                                trcat.RotationTransform(self) +
@@ -2995,7 +3018,7 @@ class ImageViewBase(Callback.Callbacks):
 
         """
         self.img_bg = (r, g, b)
-        self.redraw(whence=3)
+        self.redraw(whence=0)
 
     def get_bg(self):
         """Get the background color.
@@ -3097,7 +3120,7 @@ class ImageViewBase(Callback.Callbacks):
         return self.onscreen_message(None)
 
     def set_enter_focus(self, tf):
-        """Determine whether the viewer widget should take focus the
+        """Determine whether the viewer widget should take focus when the
         cursor enters the window.
 
         Parameters
@@ -3105,10 +3128,8 @@ class ImageViewBase(Callback.Callbacks):
         tf : bool
             If True the widget will grab focus when the cursor moves into
             the window.
-
-        This should be implemented by subclasses.
         """
-        self.logger.warning("Subclass should override this abstract method!")
+        self.t_.set(enter_focus=tf)
 
     def update_image(self):
         """Update image.
@@ -3376,7 +3397,7 @@ class ImageViewBase(Callback.Callbacks):
             See :meth:`get_rgb_image_as_buffer`.
 
         """
-        with open(filepath, 'w') as out_f:
+        with open(filepath, 'wb') as out_f:
             self.get_rgb_image_as_buffer(output=out_f, format=format,
                                          quality=quality)
         self.logger.debug("wrote %s file '%s'" % (format, filepath))
@@ -3415,6 +3436,14 @@ class ImageViewBase(Callback.Callbacks):
         """
         raise ImageViewError("Subclass should override this abstract method!")
 
+    def take_focus(self):
+        """Have the widget associated with this viewer take the keyboard
+        focus.
+        This should be implemented by subclasses, if they have a widget that
+        can take focus.
+        """
+        pass
+
     def set_onscreen_message(self, text, redraw=True):
         """Called by a subclass to update the onscreen message.
 
@@ -3424,16 +3453,19 @@ class ImageViewBase(Callback.Callbacks):
             The text to show in the display.
 
         """
+        width, height = self.get_window_size()
+
         font = self.t_.get('onscreen_font', 'sans serif')
-        font_size = self.t_.get('onscreen_font_size', 24)
+        font_size = self.t_.get('onscreen_font_size', None)
+        if font_size is None:
+            font_size = self._calc_font_size(width)
 
         # TODO: need some way to accurately estimate text extents
         # without actually putting text on the canvas
         ht, wd = font_size, font_size
         if text is not None:
-            wd = len(text) * font_size * 0.5
+            wd = len(text) * font_size * 1.1
 
-        width, height = self.get_window_size()
         x = (width // 2) - (wd // 2)
         y = ((height // 3) * 2) - (ht // 2)
 
@@ -3443,22 +3475,61 @@ class ImageViewBase(Callback.Callbacks):
         try:
             message = canvas.get_object_by_tag(tag)
             if text is None:
-                canvas.delete_object_by_tag(tag)
+                message.text = ''
             else:
                 message.x = x
                 message.y = y
                 message.text = text
+                message.fontsize = font_size
 
         except KeyError:
-            if text is not None:
-                Text = canvas.get_draw_class('text')
-                canvas.add(Text(x, y, text=text,
-                                font=font, fontsize=font_size,
-                                color=self.img_fg, coord='window'),
-                           tag=tag, redraw=False)
+            if text is None:
+                text = ''
+            Text = canvas.get_draw_class('text')
+            canvas.add(Text(x, y, text=text,
+                            font=font, fontsize=font_size,
+                            color=self.img_fg, coord='window'),
+                       tag=tag, redraw=False)
 
         if redraw:
             canvas.update_canvas(whence=3)
+
+    def _calc_font_size(self, win_wd):
+        """Heuristic to calculate an appropriate font size based on the
+        width of the viewer window.
+
+        Parameters
+        ----------
+        win_wd : int
+            The width of the viewer window.
+
+        Returns
+        -------
+        font_size : int
+            Approximately appropriate font size in points
+
+        """
+        font_size = 4
+        if win_wd >= 1600:
+            font_size = 24
+        elif win_wd >= 1000:
+            font_size = 18
+        elif win_wd >= 800:
+            font_size = 16
+        elif win_wd >= 600:
+            font_size = 14
+        elif win_wd >= 500:
+            font_size = 12
+        elif win_wd >= 400:
+            font_size = 11
+        elif win_wd >= 300:
+            font_size = 10
+        elif win_wd >= 250:
+            font_size = 8
+        elif win_wd >= 200:
+            font_size = 6
+
+        return font_size
 
     def show_pan_mark(self, tf, color='red'):
         # TO BE DEPRECATED--please use addons.show_pan_mark
